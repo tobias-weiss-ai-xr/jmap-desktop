@@ -2,17 +2,52 @@ use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use crate::error::{AppError, AppResult};
 use tauri::Emitter;
 
-/// Connection settings provided by the frontend.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Connection settings — password intentionally excluded from Debug.
+#[derive(Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionSettings {
     pub server_url: String,
     pub username: String,
+    #[serde(skip_serializing)]
     pub password: String,
+}
+
+impl std::fmt::Debug for ConnectionSettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ConnectionSettings")
+            .field("server_url", &self.server_url)
+            .field("username", &self.username)
+            .field("password", &"[REDACTED]")
+            .finish()
+    }
+}
+
+impl Drop for ConnectionSettings {
+    fn drop(&mut self) {
+        // Zero the password on drop
+        self.password.zeroize();
+        self.server_url.zeroize();
+    }
+}
+
+/// Zeroize a string's contents.
+trait Zeroize {
+    fn zeroize(&mut self);
+}
+impl Zeroize for String {
+    fn zeroize(&mut self) {
+        unsafe {
+            for b in self.as_bytes_mut() {
+                *b = 0;
+            }
+        }
+        self.clear();
+    }
 }
 
 /// JMAP Session resource (RFC 8620 §2).
@@ -89,16 +124,20 @@ impl Default for JmapSessionManager {
 
 impl JmapSessionManager {
     pub async fn connect(&self, settings: ConnectionSettings) -> AppResult<JmapSession> {
-        let server_url = settings.server_url.trim_end_matches('/');
-        let _ = url::Url::parse(server_url).map_err(|e| AppError::InvalidUrl(e.to_string()))?;
+        let server_url = settings.server_url.trim_end_matches('/').to_string();
+        url::Url::parse(&server_url)
+            .map_err(|e| AppError::InvalidUrl(e.to_string()))?;
 
         let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .connect_timeout(Duration::from_secs(10))
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 let auth = format!("{}:{}", settings.username, settings.password);
                 headers.insert(
                     reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&format!("Basic {}", base64_encode(&auth))).unwrap(),
+                    reqwest::header::HeaderValue::from_str(&format!("Basic {}", base64_encode(&auth)))
+                        .unwrap(),
                 );
                 headers
             })
@@ -109,11 +148,12 @@ impl JmapSessionManager {
 
         let jmap_session: JmapSession = match response {
             Ok(resp) if resp.status().is_success() => resp.json().await?,
-            _ => {
-                let resp = client.get(server_url).header("Accept", "application/json").send().await?
-                    .error_for_status().map_err(|_| AppError::AuthFailed)?;
-                resp.json().await?
+            Ok(resp) => {
+                let status = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                return Err(AppError::AuthFailed(format!("HTTP {} — {}", status, body)));
             }
+            Err(e) => return Err(AppError::Connection(e)),
         };
 
         *self.session.lock().unwrap() = Some(jmap_session.clone());
@@ -140,6 +180,7 @@ impl JmapSessionManager {
         self.client.lock().unwrap().clone().ok_or(AppError::NotConnected)
     }
 
+    /// Send a JMAP request. Validates the response and checks for JMAP-level errors.
     pub async fn request(
         &self,
         using: &[&str],
@@ -147,36 +188,70 @@ impl JmapSessionManager {
     ) -> AppResult<Vec<(String, serde_json::Value, String)>> {
         let client = self.get_client()?;
         let session = self.get_session()?;
-        let body = JmapRequest { using: using.iter().map(|s| s.to_string()).collect(), method_calls };
-        let resp = client.post(&session.api_url).json(&body).send().await?;
+
+        let body = JmapRequest {
+            using: using.iter().map(|s| s.to_string()).collect(),
+            method_calls,
+        };
+
+        let resp = client
+            .post(&session.api_url)
+            .timeout(Duration::from_secs(60))
+            .json(&body)
+            .send()
+            .await?;
+
         if !resp.status().is_success() {
-            return Err(AppError::Api { status: resp.status().as_u16(), detail: resp.text().await.unwrap_or_default() });
+            return Err(AppError::Api {
+                status: resp.status().as_u16(),
+                detail: resp.text().await.unwrap_or_default(),
+            });
         }
+
         let jmap_resp: JmapResponse = resp.json().await?;
+
+        // Check for JMAP-level errors in method responses
+        for (name, args, _call_id) in &jmap_resp.method_responses {
+            if name.ends_with("Error") {
+                let error_type = args.get("type").and_then(|v| v.as_str()).unwrap_or("unknown");
+                let description = args.get("description").and_then(|v| v.as_str()).unwrap_or("");
+                return Err(AppError::Method {
+                    method: name.clone(),
+                    description: format!("{}: {}", error_type, description),
+                });
+            }
+        }
+
         Ok(jmap_resp.method_responses)
     }
 
     pub fn primary_mail_account_id(&self) -> AppResult<String> {
         let session = self.get_session()?;
-        session.primary_accounts.get("urn:ietf:params:jmap:mail").cloned()
-            .ok_or_else(|| AppError::Session("No primary mail account found".into()))
+        session
+            .primary_accounts
+            .get("urn:ietf:params:jmap:mail")
+            .cloned()
+            .ok_or(AppError::Session("No primary mail account found".into()))
     }
 
-    pub fn set_mailbox_state(&self, state: String) { *self.mailbox_state.lock().unwrap() = Some(state); }
-    pub fn mailbox_state(&self) -> Option<String> { self.mailbox_state.lock().unwrap().clone() }
-    pub fn set_email_state(&self, state: String) { *self.email_state.lock().unwrap() = Some(state); }
-    pub fn email_state(&self) -> Option<String> { self.email_state.lock().unwrap().clone() }
+    pub fn set_mailbox_state(&self, state: String) {
+        *self.mailbox_state.lock().unwrap() = Some(state);
+    }
+    pub fn mailbox_state(&self) -> Option<String> {
+        self.mailbox_state.lock().unwrap().clone()
+    }
+    pub fn set_email_state(&self, state: String) {
+        *self.email_state.lock().unwrap() = Some(state);
+    }
+    pub fn email_state(&self) -> Option<String> {
+        self.email_state.lock().unwrap().clone()
+    }
 
     pub fn event_source_url(&self) -> Option<String> {
         self.session.lock().unwrap().as_ref().and_then(|s| s.event_source_url.clone())
     }
 
-    pub fn upload_url(&self) -> String {
-        self.session.lock().unwrap().as_ref().map(|s| s.upload_url.clone()).unwrap_or_default()
-    }
-
     /// Start background sync (polling + EventSource).
-    /// Must be called with an Arc<Self> so the sync tasks can hold a reference.
     pub fn start_sync(self: &Arc<Self>, app: tauri::AppHandle) {
         self.stop_sync();
 
@@ -187,10 +262,10 @@ impl JmapSessionManager {
 
         let handle = tokio::spawn(async move {
             let _ = app_poll.emit("jmap://sync-status", "starting");
-            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            tokio::time::sleep(Duration::from_secs(2)).await;
             poll_changes(&arc_poll, &app_poll).await;
 
-            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            let mut ticker = tokio::time::interval(Duration::from_secs(30));
             loop {
                 ticker.tick().await;
                 poll_changes(&arc_poll, &app_poll).await;
@@ -198,7 +273,7 @@ impl JmapSessionManager {
         });
 
         tokio::spawn(async move {
-            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            tokio::time::sleep(Duration::from_secs(5)).await;
             eventsource_loop(&arc_es, &app_es).await;
         });
 
@@ -217,20 +292,64 @@ async fn poll_changes(session: &JmapSessionManager, app: &tauri::AppHandle) {
     let _ = app.emit("jmap://sync-status", "syncing");
     if let Ok(account_id) = session.primary_mail_account_id() {
         if let Some(old) = session.email_state() {
-            if let Ok(changes) = crate::jmap::client::get_email_changes(session, &account_id, &old, None).await {
-                if !changes.created.is_empty() || !changes.updated.is_empty() || !changes.destroyed.is_empty() {
-                    let _ = app.emit("jmap://emails-changed", serde_json::json!({
-                        "created": changes.created, "updated": changes.updated, "destroyed": changes.destroyed,
-                    }));
+            match crate::jmap::client::get_email_changes(session, &account_id, &old, None).await {
+                Ok(changes) => {
+                    if !changes.created.is_empty()
+                        || !changes.updated.is_empty()
+                        || !changes.destroyed.is_empty()
+                    {
+                        let _ = app.emit(
+                            "jmap://emails-changed",
+                            serde_json::json!({
+                                "created": changes.created,
+                                "updated": changes.updated,
+                                "destroyed": changes.destroyed,
+                            }),
+                        );
+                    }
+                    if changes.has_more_changes {
+                        // Drain remaining changes iteratively (non-recursive)
+                        let mut since = changes.new_state;
+                        for _ in 0..10 {
+                            match crate::jmap::client::get_email_changes(session, &account_id, &since, None).await {
+                                Ok(c) => {
+                                    if c.created.is_empty() && c.updated.is_empty() && c.destroyed.is_empty() {
+                                        break;
+                                    }
+                                    let _ = app.emit(
+                                        "jmap://emails-changed",
+                                        serde_json::json!({
+                                            "created": c.created,
+                                            "updated": c.updated,
+                                            "destroyed": c.destroyed,
+                                        }),
+                                    );
+                                    if c.has_more_changes { since = c.new_state; } else { break; }
+                                }
+                                Err(e) => { eprintln!("Email/changes drain failed: {}", e); break; }
+                            }
+                        }
+                    }
                 }
+                Err(e) => eprintln!("Email/changes failed: {}", e),
             }
         }
         if let Some(old) = session.mailbox_state() {
-            if let Ok(changes) = crate::jmap::client::get_mailbox_changes(session, &account_id, &old).await {
-                if !changes.created.is_empty() || !changes.updated.is_empty() || !changes.destroyed.is_empty() {
-                    let _ = app.emit("jmap://mailboxes-changed", serde_json::json!({
-                        "created": changes.created, "updated": changes.updated, "destroyed": changes.destroyed,
-                    }));
+            if let Ok(changes) =
+                crate::jmap::client::get_mailbox_changes(session, &account_id, &old).await
+            {
+                if !changes.created.is_empty()
+                    || !changes.updated.is_empty()
+                    || !changes.destroyed.is_empty()
+                {
+                    let _ = app.emit(
+                        "jmap://mailboxes-changed",
+                        serde_json::json!({
+                            "created": changes.created,
+                            "updated": changes.updated,
+                            "destroyed": changes.destroyed,
+                        }),
+                    );
                 }
             }
         }
@@ -238,35 +357,72 @@ async fn poll_changes(session: &JmapSessionManager, app: &tauri::AppHandle) {
     let _ = app.emit("jmap://sync-status", "synced");
 }
 
-/// EventSource push listener.
+/// EventSource push listener — properly parses SSE fields.
 async fn eventsource_loop(session: &JmapSessionManager, app: &tauri::AppHandle) {
     let es_url = match session.event_source_url() {
         Some(u) => u,
         None => return,
     };
-    let client = match session.get_client() { Ok(c) => c, Err(_) => return, };
-    let resp = match client.get(&es_url).header("Accept", "text/event-stream").send().await {
-        Ok(r) => r,
-        Err(e) => { eprintln!("EventSource failed: {}", e); return; }
+    let client = match session.get_client() {
+        Ok(c) => c,
+        Err(_) => return,
     };
-    if !resp.status().is_success() { return; }
+
+    let resp = match client
+        .get(&es_url)
+        .header("Accept", "text/event-stream")
+        .header("Cache-Control", "no-cache")
+        .timeout(Duration::from_secs(0)) // streaming — no timeout
+        .send()
+        .await
+    {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("EventSource connect failed: {}", e);
+            return;
+        }
+    };
+    if !resp.status().is_success() {
+        return;
+    }
 
     let _ = app.emit("jmap://sync-status", "push-connected");
+
     use futures_util::StreamExt;
     let mut stream = resp.bytes_stream();
     let mut buffer = String::new();
+    let mut current_event = String::new();
 
     loop {
         match stream.next().await {
             Some(Ok(bytes)) => {
                 buffer.push_str(&String::from_utf8_lossy(&bytes));
-                while let Some(pos) = buffer.find("\n\n") {
-                    let event_text = buffer[..pos].to_string();
-                    buffer = buffer[pos + 2..].to_string();
-                    if event_text.contains("state") { poll_changes(session, app).await; }
+
+                // Process complete lines
+                while let Some(pos) = buffer.find('\n') {
+                    let line = buffer[..pos].trim_end_matches('\r').to_string();
+                    buffer = buffer[pos + 1..].to_string();
+
+                    if line.is_empty() {
+                        // End of event — dispatch
+                        if !current_event.is_empty() {
+                            current_event.clear();
+                        }
+                    } else if let Some(data) = line.strip_prefix("data:") {
+                        // We got data — trigger a poll
+                        if !data.trim().is_empty() {
+                            poll_changes(session, app).await;
+                        }
+                    } else if let Some(event) = line.strip_prefix("event:") {
+                        current_event = event.trim().to_string();
+                    }
+                    // Ignore id:, retry:, comments
                 }
             }
-            _ => { let _ = app.emit("jmap://sync-status", "push-disconnected"); break; }
+            _ => {
+                let _ = app.emit("jmap://sync-status", "push-disconnected");
+                break;
+            }
         }
     }
 }
@@ -277,10 +433,16 @@ fn base64_encode(input: &str) -> String {
     let mut result = String::new();
     for chunk in bytes.chunks(3) {
         let mut n = 0u32;
-        for (i, &b) in chunk.iter().enumerate() { n |= (b as u32) << (16 - 8 * i); }
+        for (i, &b) in chunk.iter().enumerate() {
+            n |= (b as u32) << (16 - 8 * i);
+        }
         let padding = 3 - chunk.len();
-        for i in 0..(4 - padding) { result.push(CHARS[((n >> (18 - 6 * i)) & 0x3F) as usize] as char); }
-        for _ in 0..padding { result.push('='); }
+        for i in 0..(4 - padding) {
+            result.push(CHARS[((n >> (18 - 6 * i)) & 0x3F) as usize] as char);
+        }
+        for _ in 0..padding {
+            result.push('=');
+        }
     }
     result
 }

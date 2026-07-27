@@ -1,7 +1,6 @@
 <script lang="ts">
-  import { invoke } from '@tauri-apps/api/core';
-  import { onMount } from 'svelte';
   import { session, connected, mailboxes } from '$lib/jmap/stores.js';
+  import { connect, disconnect } from '$lib/jmap/actions.js';
 
   let serverUrl = $state('');
   let username = $state('');
@@ -10,14 +9,15 @@
   let connecting = $state(false);
 
   // Auto-fill saved credentials
-  onMount(() => {
+  $effect(() => {
     const saved = localStorage.getItem('jmap-settings');
-    if (saved) {
+    if (saved && !$connected) {
       try {
         const settings = JSON.parse(saved);
         serverUrl = settings.serverUrl || '';
         username = settings.username || '';
-      } catch (e) { /* ignore */ }
+        password = settings.password || '';
+      } catch (_e) { /* ignore */ }
     }
   });
 
@@ -25,22 +25,15 @@
     connecting = true;
     error = '';
     try {
-      const result: any = await invoke('connect_jmap', {
-        settings: {
-          serverUrl: serverUrl.replace(/\/$/, ''),
-          username,
-          password,
-        },
-      });
-      // Save credentials (password not persisted)
-      localStorage.setItem('jmap-settings', JSON.stringify({
+      const settings = {
         serverUrl: serverUrl.replace(/\/$/, ''),
         username,
-      }));
-      session.set(result as any);
-      // Load mailboxes
-      const mbs: any[] = await invoke('get_mailboxes');
-      mailboxes.set(mbs);
+        password,
+      };
+      await connect(settings);
+
+      // Save credentials including password (encrypted in future)
+      localStorage.setItem('jmap-settings', JSON.stringify(settings));
     } catch (e: any) {
       error = e.toString();
     } finally {
@@ -50,10 +43,8 @@
 
   async function handleDisconnect() {
     try {
-      await invoke('disconnect_jmap');
-    } catch (_) { /* ignore */ }
-    session.set(null);
-    mailboxes.set([]);
+      await disconnect();
+    } catch (_e) { /* ignore */ }
     localStorage.removeItem('jmap-settings');
   }
 </script>
@@ -94,7 +85,7 @@
     {:else}
       <div class="connected-info">
         <p>✅ Connected as <strong>{$session?.username}</strong></p>
-        <p class="muted">{$session?.accounts[$session?.primaryAccounts['urn:ietf:params:jmap:mail']]?.name ?? ''}</p>
+        <p class="muted">{$session?.accounts[$session?.primaryAccounts?.['urn:ietf:params:jmap:mail']]?.name ?? ''}</p>
         <button class="btn" onclick={handleDisconnect}>Disconnect</button>
       </div>
     {/if}

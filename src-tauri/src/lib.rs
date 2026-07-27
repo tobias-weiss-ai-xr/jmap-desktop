@@ -34,7 +34,7 @@ pub fn run() {
             commands::search_emails,
             commands::get_threads,
             commands::set_email_keywords,
-            commands::toggle_seen,
+            commands::mark_seen,
             commands::toggle_flagged,
             commands::move_email,
             commands::delete_email,

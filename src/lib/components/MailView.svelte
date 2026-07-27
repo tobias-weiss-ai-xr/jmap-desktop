@@ -7,6 +7,7 @@
   let composeMode = $state<'reply' | 'forward' | 'new'>('new');
   let composeTarget = $state<any>(null);
   let showMoveMenu = $state(false);
+  let showDeleteConfirm = $state(false);
 
   function formatAddress(addr: any): string {
     if (!addr) return '';
@@ -18,6 +19,7 @@
   }
 
   function formatDate(dateStr: string): string {
+    if (!dateStr) return '';
     return new Date(dateStr).toLocaleString();
   }
 
@@ -29,10 +31,17 @@
     if (email.textBody?.length > 0) {
       const part = email.textBody[0];
       if (email.bodyValues?.[part.partId]) {
-        return `<pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:13px;color:var(--fg-secondary)">${email.bodyValues[part.partId].value}</pre>`;
+        return `<pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:13px;color:var(--fg-secondary)">${escapeHtml(email.bodyValues[part.partId].value)}</pre>`;
       }
     }
     return `<p class="muted">No content available</p>`;
+  }
+
+  function escapeHtml(str: string): string {
+    return str
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;');
   }
 
   function handleReply() {
@@ -53,14 +62,24 @@
   }
 
   async function handleDelete() {
+    if (!$selectedEmailId) return;
+    showDeleteConfirm = true;
+  }
+
+  async function confirmDelete() {
+    showDeleteConfirm = false;
     if ($selectedEmailId) {
       await deleteEmail($selectedEmailId);
     }
   }
 
+  function cancelDelete() {
+    showDeleteConfirm = false;
+  }
+
   async function handleToggleRead() {
     if (!$currentEmail) return;
-    const seen = $currentEmail.keywords.$seen;
+    const seen = !!($currentEmail.keywords && $currentEmail.keywords.$seen);
     if (seen) {
       await markAsUnread($currentEmail.id);
     } else {
@@ -114,19 +133,39 @@
       </div>
 
       {#if $currentEmail.hasAttachment}
-        <div class="mail-attachments">📎 {$currentEmail.attachments?.length ?? 1} attachment(s)</div>
+        <div class="mail-attachments">📎 Attachment</div>
       {/if}
 
       <div class="mail-actions">
         <button class="btn btn-primary" onclick={handleReply}>↩ Reply</button>
         <button class="btn" onclick={handleForward}>↗ Forward</button>
         <button class="btn" onclick={handleToggleRead}>
-          {$currentEmail.keywords.$seen ? 'Mark unread' : 'Mark read'}
+          {($currentEmail.keywords && $currentEmail.keywords.$seen) ? 'Mark unread' : 'Mark read'}
         </button>
         <div class="action-separator"></div>
         <button class="btn btn-danger" onclick={handleDelete}>🗑 Delete</button>
       </div>
     </div>
+
+    <!-- Delete confirmation dialog -->
+    {#if showDeleteConfirm}
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <div class="confirm-overlay" role="presentation" onclick={cancelDelete}>
+        <div
+          class="confirm-dialog"
+          onclick={(e) => e.stopPropagation()}
+          role="alertdialog"
+          tabindex="-1"
+          aria-label="Confirm deletion"
+        >
+          <p>Delete this email?</p>
+          <div class="confirm-actions">
+            <button class="btn btn-danger" onclick={confirmDelete}>Delete</button>
+            <button class="btn" onclick={cancelDelete}>Cancel</button>
+          </div>
+        </div>
+      </div>
+    {/if}
 
     <div class="mail-body">
       {@html getBodyHtml($currentEmail)}
@@ -178,4 +217,36 @@
   }
 
   .empty-icon { font-size: 48px; opacity: 0.3; }
+
+  /* Confirm dialog */
+  .confirm-overlay {
+    position: fixed;
+    top: 0; left: 0; right: 0; bottom: 0;
+    background: rgba(0, 0, 0, 0.5);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 1000;
+  }
+
+  .confirm-dialog {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 24px;
+    min-width: 300px;
+    text-align: center;
+  }
+
+  .confirm-dialog p {
+    font-size: 15px;
+    margin-bottom: 16px;
+    color: var(--fg-primary);
+  }
+
+  .confirm-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: center;
+  }
 </style>

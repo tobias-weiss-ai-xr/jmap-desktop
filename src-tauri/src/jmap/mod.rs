@@ -1,4 +1,4 @@
 pub mod client;
 pub mod session;
 
-pub use session::{ConnectionSettings, JmapAccount, JmapSession, JmapSessionManager};
+pub use session::{ConnectionSettings, JmapSessionManager};

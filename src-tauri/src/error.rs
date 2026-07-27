@@ -5,7 +5,7 @@ pub enum AppError {
     #[error("JMAP connection error: {0}")]
     Connection(#[from] reqwest::Error),
 
-    #[error("JMAP API error: {status} {detail}")]
+    #[error("JMAP API error {status}: {detail}")]
     Api { status: u16, detail: String },
 
     #[error("Not connected — no active JMAP session")]
@@ -14,11 +14,14 @@ pub enum AppError {
     #[error("Invalid server URL: {0}")]
     InvalidUrl(String),
 
-    #[error("Authentication failed")]
-    AuthFailed,
+    #[error("Authentication failed: {0}")]
+    AuthFailed(String),
 
     #[error("Session error: {0}")]
     Session(String),
+
+    #[error("JMAP method error: {method} — {description}")]
+    Method { method: String, description: String },
 
     #[error("{0}")]
     Other(String),
@@ -27,7 +30,6 @@ pub enum AppError {
     Json(#[from] serde_json::Error),
 }
 
-// Implement serde::Serialize so Tauri can send errors to the frontend
 impl serde::Serialize for AppError {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where

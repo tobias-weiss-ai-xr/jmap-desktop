@@ -27,6 +27,7 @@ export async function connect(settings: ConnectionSettings) {
 }
 
 export async function disconnect() {
+  cleanupEventListeners();
   await invoke('disconnect_jmap');
   session.set(null);
   mailboxes.set([]);
@@ -106,33 +107,52 @@ export async function fetchEmail(id: string): Promise<Email | null> {
   return null;
 }
 
-export async function searchEmails(text: string): Promise<string[]> {
-  if (!text.trim()) return [];
+/**
+ * Search emails and replace the current email list with results.
+ * Returns a function to restore the previous mailbox view.
+ */
+export async function searchEmails(text: string): Promise<(() => void) | null> {
+  if (!text.trim()) return null;
   try {
+    // Save current state for restore
+    const prevIds = get(emailIds);
+    const prevMap = new Map(get(emails));
+    const prevMailbox = get(selectedMailboxId);
+
     const result: any = await invoke('search_emails', { text, limit: 50 });
     if (result.ids?.length > 0) {
       const response: any = await getEmails(result.ids);
-      const existing = get(emails);
-      const map = new Map(existing);
+      const map = new Map<string, Email>();
       for (const email of response.list ?? []) map.set(email.id, email);
+      emailIds.set(result.ids ?? []);
       emails.set(map);
+    } else {
+      emailIds.set([]);
+      emails.set(new Map());
     }
-    return result.ids ?? [];
+
+    // Return restore function
+    return () => {
+      if (prevMailbox) {
+        selectedMailboxId.set(prevMailbox);
+        // Trigger re-fetch via the $effect in +page.svelte
+      }
+    };
   } catch (e) {
     console.error('Search failed:', e);
-    return [];
+    return null;
   }
 }
 
 // ── Mutations ──
 
 export async function markAsRead(id: string) {
-  await invoke('toggle_seen', { id });
+  await invoke('mark_seen', { id, seen: true });
   updateLocalEmail(id, (e) => ({ ...e, keywords: { ...e.keywords, $seen: true } }));
 }
 
 export async function markAsUnread(id: string) {
-  await invoke('set_email_keywords', { id, keywords: { $seen: false } });
+  await invoke('mark_seen', { id, seen: false });
   updateLocalEmail(id, (e) => {
     const kw = { ...e.keywords };
     delete kw.$seen;
@@ -141,13 +161,23 @@ export async function markAsUnread(id: string) {
 }
 
 export async function toggleFlag(id: string, flagged: boolean) {
-  await invoke('toggle_flagged', { id, value: !flagged });
-  updateLocalEmail(id, (e) => ({ ...e, keywords: { ...e.keywords, $flagged: !flagged } }));
+  const newValue = !flagged;
+  await invoke('toggle_flagged', { id, value: newValue });
+  updateLocalEmail(id, (e) => {
+    const kw = { ...e.keywords };
+    if (newValue) {
+      kw.$flagged = true;
+    } else {
+      delete kw.$flagged;
+    }
+    return { ...e, keywords: kw };
+  });
 }
 
 export async function moveToMailbox(id: string, toMailboxId: string) {
   await invoke('move_email', { id, toMailboxId });
-  updateLocalEmail(id, (e) => ({ ...e, mailboxIds: { ...e.mailboxIds, [toMailboxId]: true } }));
+  // Optimistic update: replace all mailboxIds with just the target
+  updateLocalEmail(id, (e) => ({ ...e, mailboxIds: { [toMailboxId]: true } }));
   refreshMailboxes();
 }
 
@@ -225,10 +255,10 @@ export function setupEventListeners() {
 
   const unlisten3 = listen<string>('jmap://sync-status', (event) => {
     syncStatus.set(event.payload);
-    if (event.payload === 'synced') {
+    if (event.payload === 'synced' || event.payload === 'push-connected') {
       lastSyncAt.set(new Date());
       isSyncing.set(false);
-    } else if (event.payload === 'syncing') {
+    } else if (event.payload === 'syncing' || event.payload === 'starting') {
       isSyncing.set(true);
     }
   });

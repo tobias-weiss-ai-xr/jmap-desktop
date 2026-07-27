@@ -1,4 +1,5 @@
 <script lang="ts">
+  /* eslint-disable svelte/state_referenced_locally */
   import { sendEmail } from '$lib/jmap/actions.js';
 
   interface Props {
@@ -19,27 +20,33 @@
     initialSubject = '',
   }: Props = $props();
 
-  let to = $state(initialTo);
+  let to = $state('');
   let cc = $state('');
   let bcc = $state('');
-  let subject = $state(initialSubject);
+  let subject = $state('');
   let body = $state('');
   let sending = $state(false);
   let error = $state('');
+  let initialized = false;
 
-  // Pre-fill for reply
-  $effect(() => {
+  // Pre-fill for reply/forward — runs once on mount.
+  // Svelte warns about "state_referenced_locally" because props are reactive;
+  // this is intentional — we only want to initialize once.
+  // eslint-disable-next-line svelte/state_referenced_locally
+  if (!initialized) {
     if (replyTo) {
-      const fromEmail = replyTo.from?.[0]?.email || replyTo.from?.[0]?.name || '';
-      to = fromEmail;
-      subject = replyTo.subject?.startsWith('Re:') ? replyTo.subject : `Re: ${replyTo.subject}`;
-      body = `\n\n--- Original Message ---\nFrom: ${replyTo.from?.[0]?.name || ''} <${replyTo.from?.[0]?.email || ''}>\nDate: ${replyTo.receivedAt}\nSubject: ${replyTo.subject}\n\n${replyTo.preview || ''}`;
+      to = replyTo.from?.[0]?.email || replyTo.from?.[0]?.name || '';
+      subject = replyTo.subject?.startsWith('Re:') ? replyTo.subject : `Re: ${replyTo.subject || ''}`;
+      body = `\n\n--- Original Message ---\nFrom: ${replyTo.from?.[0]?.name || ''} <${replyTo.from?.[0]?.email || ''}>\nDate: ${replyTo.receivedAt || ''}\nSubject: ${replyTo.subject || ''}\n\n${replyTo.preview || ''}`;
+    } else if (forwardOf) {
+      subject = forwardOf.subject?.startsWith('Fwd:') ? forwardOf.subject : `Fwd: ${forwardOf.subject || ''}`;
+      body = `\n\n--- Forwarded Message ---\nFrom: ${forwardOf.from?.[0]?.name || ''} <${forwardOf.from?.[0]?.email || ''}>\nDate: ${forwardOf.receivedAt || ''}\nSubject: ${forwardOf.subject || ''}\n\n${forwardOf.preview || ''}`;
+    } else {
+      to = initialTo;
+      subject = initialSubject;
     }
-    if (forwardOf) {
-      subject = forwardOf.subject?.startsWith('Fwd:') ? forwardOf.subject : `Fwd: ${forwardOf.subject}`;
-      body = `\n\n--- Forwarded Message ---\nFrom: ${forwardOf.from?.[0]?.name || ''} <${forwardOf.from?.[0]?.email || ''}>\nDate: ${forwardOf.receivedAt}\nSubject: ${forwardOf.subject}\n\n${forwardOf.preview || ''}`;
-    }
-  });
+    initialized = true;
+  }
 
   function parseRecipients(str: string): string[] {
     return str.split(',').map((s) => s.trim()).filter(Boolean);
@@ -83,26 +90,26 @@
 
 <svelte:window onkeydown={handleKeydown} />
 
-<div class="compose" onkeydown={handleKeydown}>
+<div class="compose" role="dialog" aria-label="Compose email">
   <div class="compose-header">
     <h2>{replyTo ? '↩ Reply' : forwardOf ? '↗ Forward' : '✉ New Email'}</h2>
-    <button class="close-btn" onclick={onClose}>✕</button>
+    <button class="close-btn" onclick={onClose} aria-label="Close compose">✕</button>
   </div>
 
   <div class="compose-fields">
     <label class="field">
       <span class="field-label">To</span>
-      <input type="text" bind:value={to} placeholder="recipient@example.com" />
+      <input type="email" bind:value={to} placeholder="recipient@example.com" />
     </label>
 
     <label class="field">
       <span class="field-label">Cc</span>
-      <input type="text" bind:value={cc} placeholder="cc@example.com (optional)" />
+      <input type="email" bind:value={cc} placeholder="cc@example.com (optional)" />
     </label>
 
     <label class="field">
       <span class="field-label">Bcc</span>
-      <input type="text" bind:value={bcc} placeholder="bcc@example.com (optional)" />
+      <input type="email" bind:value={bcc} placeholder="bcc@example.com (optional)" />
     </label>
 
     <label class="field">

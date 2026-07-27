@@ -15,14 +15,37 @@
 
   function handleSearch() {
     if (searchQuery.trim()) {
-      // Navigate to search results
       const event = new CustomEvent('jmap-search', { detail: searchQuery });
       window.dispatchEvent(event);
     }
   }
+
+  function handleSearchKeydown(e: KeyboardEvent) {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      handleSearch();
+    }
+    if (e.key === 'Escape') {
+      searchQuery = '';
+      (e.target as HTMLInputElement).blur();
+    }
+  }
+
+  function mailboxIcon(role: string | null | undefined): string {
+    switch (role) {
+      case 'inbox': return '📥';
+      case 'sent': return '📤';
+      case 'drafts': return '📝';
+      case 'trash': return '🗑️';
+      case 'junk': return '⚠️';
+      case 'flagged': return '⭐';
+      case 'archive': return '📦';
+      default: return '📁';
+    }
+  }
 </script>
 
-<aside class="sidebar">
+<aside class="sidebar" role="navigation" aria-label="Mail folders">
   <div class="sidebar-header">
     <h2 class="sidebar-title">
       {#if $session}
@@ -31,7 +54,7 @@
         JMAP Desktop
       {/if}
     </h2>
-    <div class="sync-badge" class:syncing={$syncStatus === 'syncing'} title="Sync status: {$syncStatus}">
+    <div class="sync-badge" class:syncing={$syncStatus === 'syncing'} title="Sync status: {$syncStatus}" aria-label="Sync: {$syncStatus}">
       {#if $syncStatus === 'syncing'}
         ⟳
       {:else if $syncStatus === 'synced' || $syncStatus === 'push-connected'}
@@ -44,10 +67,11 @@
 
   <div class="search-bar">
     <input
-      type="text"
+      type="search"
       bind:value={searchQuery}
       placeholder="Search emails…"
-      onkeydown={(e) => e.key === 'Enter' && handleSearch()}
+      onkeydown={handleSearchKeydown}
+      aria-label="Search emails"
     />
   </div>
 
@@ -65,15 +89,10 @@
           class="mailbox-item"
           class:selected={$selectedMailboxId === mailbox.id}
           onclick={() => (selectedMailboxId.set(mailbox.id))}
+          aria-current={$selectedMailboxId === mailbox.id ? 'true' : undefined}
         >
           <span class="mailbox-icon" data-role={mailbox.role ?? 'folder'}>
-            {mailbox.role === 'inbox' ? '📥' :
-             mailbox.role === 'sent' ? '📤' :
-             mailbox.role === 'drafts' ? '📝' :
-             mailbox.role === 'trash' ? '🗑️' :
-             mailbox.role === 'junk' ? '⚠️' :
-             mailbox.role === 'flagged' ? '⭐' :
-             mailbox.role === 'archive' ? '📦' : '📁'}
+            {mailboxIcon(mailbox.role)}
           </span>
           <span class="mailbox-name">{mailbox.name}</span>
           {#if count > 0}

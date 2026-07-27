@@ -1,8 +1,9 @@
 <script lang="ts">
   import { emailIds, emails, selectedEmailId, isLoadingEmails } from '$lib/jmap/stores.js';
-  import { toggleFlag, deleteEmail } from '$lib/jmap/actions.js';
+  import { toggleFlag } from '$lib/jmap/actions.js';
 
   function formatRelative(dateStr: string): string {
+    if (!dateStr) return '';
     const date = new Date(dateStr);
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
@@ -19,18 +20,37 @@
     return from.name || from.email;
   }
 
-  function truncate(str: string, len: number = 80): string {
+  function truncate(str: string | undefined, len: number = 80): string {
+    if (!str) return '';
     return str.length > len ? str.slice(0, len) + '…' : str;
+  }
+
+  function isFlagged(email: any): boolean {
+    return !!(email.keywords && (email.keywords.$flagged || email.keywords.$starred));
+  }
+
+  function isUnseen(email: any): boolean {
+    return !(email.keywords && email.keywords.$seen);
+  }
+
+  function handleSelect(id: string) {
+    selectedEmailId.set(id);
+  }
+
+  function handleSelectKeydown(e: KeyboardEvent, id: string) {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      handleSelect(id);
+    }
   }
 
   function handleContextMenu(e: MouseEvent, id: string, flagged: boolean) {
     e.preventDefault();
-    // For now just toggle flag on right-click
     toggleFlag(id, flagged);
   }
 </script>
 
-<div class="mail-list">
+<div class="mail-list" role="list" aria-label="Email list">
   {#if $isLoadingEmails}
     <div class="loading">Loading…</div>
   {:else if $emailIds.length === 0}
@@ -40,19 +60,29 @@
       {#each $emailIds as id (id)}
         {@const email = $emails.get(id)}
         {#if email}
-          {@const flagged = email.keywords.$flagged ?? email.keywords.$starred ?? false}
-          {@const seen = !!email.keywords.$seen}
-          <button
+          {@const flagged = isFlagged(email)}
+          {@const unseen = isUnseen(email)}
+          <!-- svelte-ignore a11y_role_supports_aria_props -->
+          <div
             class="mail-item"
             class:selected={$selectedEmailId === id}
-            class:unread={!seen}
-            onclick={() => (selectedEmailId.set(id))}
+            class:unread={unseen}
+            role="button"
+            tabindex="0"
+            aria-selected={$selectedEmailId === id}
+            onclick={() => handleSelect(id)}
+            onkeydown={(e) => handleSelectKeydown(e, id)}
             oncontextmenu={(e) => handleContextMenu(e, id, flagged)}
           >
             <div class="mail-item-header">
-              <span class="mail-flag" class:flagged={flagged} onclick={(e) => { e.stopPropagation(); toggleFlag(id, flagged); }}>
+              <button
+                class="mail-flag"
+                class:flagged={flagged}
+                onclick={(e) => { e.stopPropagation(); toggleFlag(id, flagged); }}
+                aria-label={flagged ? 'Remove flag' : 'Flag email'}
+              >
                 {flagged ? '⭐' : '☆'}
-              </span>
+              </button>
               <span class="mail-sender">{formatSender(email)}</span>
               <span class="mail-date">{formatRelative(email.receivedAt)}</span>
             </div>
@@ -61,7 +91,7 @@
             {#if email.hasAttachment}
               <span class="mail-attachment">📎</span>
             {/if}
-          </button>
+          </div>
         {/if}
       {/each}
     </div>
@@ -93,6 +123,7 @@
     cursor: pointer;
     text-align: left;
     font-family: inherit;
+    font-size: inherit;
     position: relative;
   }
 
@@ -101,6 +132,7 @@
   .mail-item.unread { border-left: 3px solid var(--accent); padding-left: 11px; }
   .mail-item.unread .mail-sender,
   .mail-item.unread .mail-subject { font-weight: 600; color: var(--fg-primary); }
+  .mail-item:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
   .mail-item-header {
     display: flex;
@@ -110,13 +142,18 @@
 
   .mail-flag {
     font-size: 14px;
+    background: transparent;
+    border: none;
     cursor: pointer;
     opacity: 0.5;
     margin-right: 4px;
+    padding: 0;
+    line-height: 1;
   }
 
   .mail-flag.flagged { opacity: 1; }
   .mail-flag:hover { opacity: 1; }
+  .mail-flag:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 2px; }
 
   .mail-sender {
     font-size: 13px;

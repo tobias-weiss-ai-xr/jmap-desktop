@@ -17,15 +17,8 @@ import type {
   GetResponse,
   SetResponse,
   ChangesResponse,
+  ConnectionSettings,
 } from './types.js';
-
-// ── Connection Settings ──
-
-export interface ConnectionSettings {
-  serverUrl: string;
-  username: string;
-  password: string;
-}
 
 // ── Tauri Command Wrappers ──
 
@@ -54,7 +47,7 @@ export async function queryEmails(
   sort: EmailComparator[],
   limit: number = 50,
   position: number = 0,
-  anchor?: string
+  anchor?: string,
 ): Promise<QueryResponse> {
   return invoke<QueryResponse>('query_emails', { filter, sort, limit, position, anchor });
 }
@@ -84,11 +77,11 @@ export async function getMailboxChanges(sinceState: string): Promise<ChangesResp
   return invoke<ChangesResponse>('get_mailbox_changes', { sinceState });
 }
 
-// ── Set (send, move, flag) ──
+// ── Set (keywords, move, delete) ──
 
 export async function setEmailKeywords(
   id: string,
-  keywords: Record<string, boolean>
+  keywords: Record<string, boolean>,
 ): Promise<SetResponse<Email>> {
   return invoke<SetResponse<Email>>('set_email_keywords', { id, keywords });
 }
