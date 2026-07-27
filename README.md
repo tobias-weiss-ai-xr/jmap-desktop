@@ -6,7 +6,7 @@ Native JMAP desktop email client for Linux, built with **Tauri 2 + Rust + TypeSc
 
 ## Status
 
-🚧 **Early development** — scaffolding complete, core JMAP protocol implemented.
+✅ **Alpha** — full JMAP protocol implemented, core JMAP protocol implemented.
 
 ## Goals
 
@@ -89,7 +89,7 @@ cargo check            # Rust compilation check (from src-tauri/)
 ## What's Implemented
 
 - ✅ Tauri 2 + SvelteKit 5 project structure
-- ✅ JMAP session discovery (`/.well-known/jmap`)
+## (`/.well-known/jmap`)
 - ✅ Basic auth (username/password)
 - ✅ `Mailbox/get` — fetch all mailboxes
 - ✅ `Email/query` — query emails by filter
