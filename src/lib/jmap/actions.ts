@@ -12,23 +12,32 @@ import {
 } from './stores.js';
 import { getMailboxes as fetchMailboxes, queryEmails, getEmails } from './client.js';
 import type { ConnectionSettings, Email, Mailbox } from './types.js';
+import { addError, addSuccess } from '$lib/toast.svelte.js';
 
 // ── Connection ──
 
 export async function connect(settings: ConnectionSettings) {
-  const result: any = await invoke('connect_jmap', { settings });
-  session.set(result);
+  try {
+    const result: any = await invoke('connect_jmap', { settings });
+    session.set(result);
 
-  const accountId = result?.primaryAccounts?.['urn:ietf:params:jmap:mail'];
-  if (accountId) selectedAccountId.set(accountId);
+    const accountId = result?.primaryAccounts?.['urn:ietf:params:jmap:mail'];
+    if (accountId) selectedAccountId.set(accountId);
 
-  await refreshMailboxes();
-  setupEventListeners();
+    await refreshMailboxes();
+    setupEventListeners();
+    addSuccess('Connected to JMAP server');
+  } catch (e: any) {
+    addError(`Connection failed: ${e}`);
+    throw e;
+  }
 }
 
 export async function disconnect() {
   cleanupEventListeners();
-  await invoke('disconnect_jmap');
+  try {
+    await invoke('disconnect_jmap');
+  } catch (_e) { /* ignore on disconnect */ }
   session.set(null);
   mailboxes.set([]);
   emailIds.set([]);
@@ -50,8 +59,8 @@ export async function refreshMailboxes() {
       const inbox = mbs.find((m: any) => m.role === 'inbox');
       if (inbox) selectedMailboxId.set(inbox.id);
     }
-  } catch (e) {
-    console.error('Failed to fetch mailboxes:', e);
+  } catch (e: any) {
+    addError(`Failed to fetch mailboxes: ${e}`);
   }
 }
 
@@ -83,8 +92,8 @@ export async function fetchEmailsForMailbox(mailboxId: string | null) {
     } else {
       emails.set(new Map());
     }
-  } catch (e) {
-    console.error('Failed to fetch emails:', e);
+  } catch (e: any) {
+    addError(`Failed to fetch emails: ${e}`);
   } finally {
     isLoadingEmails.set(false);
   }
@@ -101,8 +110,8 @@ export async function fetchEmail(id: string): Promise<Email | null> {
       emails.set(updated);
       return email;
     }
-  } catch (e) {
-    console.error('Failed to fetch email:', e);
+  } catch (e: any) {
+    addError(`Failed to fetch email: ${e}`);
   }
   return null;
 }
@@ -114,11 +123,6 @@ export async function fetchEmail(id: string): Promise<Email | null> {
 export async function searchEmails(text: string): Promise<(() => void) | null> {
   if (!text.trim()) return null;
   try {
-    // Save current state for restore
-    const prevIds = get(emailIds);
-    const prevMap = new Map(get(emails));
-    const prevMailbox = get(selectedMailboxId);
-
     const result: any = await invoke('search_emails', { text, limit: 50 });
     if (result.ids?.length > 0) {
       const response: any = await getEmails(result.ids);
@@ -131,15 +135,15 @@ export async function searchEmails(text: string): Promise<(() => void) | null> {
       emails.set(new Map());
     }
 
-    // Return restore function
+    // Return restore function that re-fetches the current mailbox
+    const restoreMailbox = get(selectedMailboxId);
     return () => {
-      if (prevMailbox) {
-        selectedMailboxId.set(prevMailbox);
-        // Trigger re-fetch via the $effect in +page.svelte
+      if (restoreMailbox) {
+        fetchEmailsForMailbox(restoreMailbox);
       }
     };
-  } catch (e) {
-    console.error('Search failed:', e);
+  } catch (e: any) {
+    addError(`Search failed: ${e}`);
     return null;
   }
 }
@@ -147,49 +151,70 @@ export async function searchEmails(text: string): Promise<(() => void) | null> {
 // ── Mutations ──
 
 export async function markAsRead(id: string) {
-  await invoke('mark_seen', { id, seen: true });
-  updateLocalEmail(id, (e) => ({ ...e, keywords: { ...e.keywords, $seen: true } }));
+  try {
+    await invoke('mark_seen', { id, seen: true });
+    updateLocalEmail(id, (e) => ({ ...e, keywords: { ...e.keywords, $seen: true } }));
+  } catch (e: any) {
+    addError(`Failed to mark as read: ${e}`);
+  }
 }
 
 export async function markAsUnread(id: string) {
-  await invoke('mark_seen', { id, seen: false });
-  updateLocalEmail(id, (e) => {
-    const kw = { ...e.keywords };
-    delete kw.$seen;
-    return { ...e, keywords: kw };
-  });
+  try {
+    await invoke('mark_seen', { id, seen: false });
+    updateLocalEmail(id, (e) => {
+      const kw = { ...e.keywords };
+      delete kw.$seen;
+      return { ...e, keywords: kw };
+    });
+  } catch (e: any) {
+    addError(`Failed to mark as unread: ${e}`);
+  }
 }
 
 export async function toggleFlag(id: string, flagged: boolean) {
   const newValue = !flagged;
-  await invoke('toggle_flagged', { id, value: newValue });
-  updateLocalEmail(id, (e) => {
-    const kw = { ...e.keywords };
-    if (newValue) {
-      kw.$flagged = true;
-    } else {
-      delete kw.$flagged;
-    }
-    return { ...e, keywords: kw };
-  });
+  try {
+    await invoke('toggle_flagged', { id, value: newValue });
+    updateLocalEmail(id, (e) => {
+      const kw = { ...e.keywords };
+      if (newValue) {
+        kw.$flagged = true;
+      } else {
+        delete kw.$flagged;
+      }
+      return { ...e, keywords: kw };
+    });
+  } catch (e: any) {
+    addError(`Failed to toggle flag: ${e}`);
+  }
 }
 
 export async function moveToMailbox(id: string, toMailboxId: string) {
-  await invoke('move_email', { id, toMailboxId });
-  // Optimistic update: replace all mailboxIds with just the target
-  updateLocalEmail(id, (e) => ({ ...e, mailboxIds: { [toMailboxId]: true } }));
-  refreshMailboxes();
+  try {
+    await invoke('move_email', { id, toMailboxId });
+    // Optimistic update: replace all mailboxIds with just the target
+    updateLocalEmail(id, (e) => ({ ...e, mailboxIds: { [toMailboxId]: true } }));
+    refreshMailboxes();
+  } catch (e: any) {
+    addError(`Failed to move email: ${e}`);
+  }
 }
 
 export async function deleteEmail(id: string) {
-  await invoke('delete_email', { id });
-  const newIds = get(emailIds).filter((eid: string) => eid !== id);
-  emailIds.set(newIds);
-  const newMap = new Map(get(emails));
-  newMap.delete(id);
-  emails.set(newMap);
-  if (get(selectedEmailId) === id) selectedEmailId.set(newIds[0] ?? null);
-  refreshMailboxes();
+  try {
+    await invoke('delete_email', { id });
+    const newIds = get(emailIds).filter((eid: string) => eid !== id);
+    emailIds.set(newIds);
+    const newMap = new Map(get(emails));
+    newMap.delete(id);
+    emails.set(newMap);
+    if (get(selectedEmailId) === id) selectedEmailId.set(newIds[0] ?? null);
+    refreshMailboxes();
+    addSuccess('Email deleted');
+  } catch (e: any) {
+    addError(`Failed to delete email: ${e}`);
+  }
 }
 
 export async function sendEmail(params: {
@@ -210,6 +235,7 @@ export async function sendEmail(params: {
     bodyHtml: params.bodyHtml ?? null,
     replyToId: params.replyToId ?? null,
   });
+  addSuccess('Email sent');
 }
 
 function updateLocalEmail(id: string, updater: (e: Email) => Email) {

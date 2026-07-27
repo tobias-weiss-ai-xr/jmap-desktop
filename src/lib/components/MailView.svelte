@@ -1,4 +1,5 @@
 <script lang="ts">
+  import DOMPurify from 'dompurify';
   import { currentEmail, selectedEmailId, emails, mailboxes } from '$lib/jmap/stores.js';
   import { markAsRead, markAsUnread, toggleFlag, deleteEmail, moveToMailbox } from '$lib/jmap/actions.js';
   import Compose from '$lib/components/Compose.svelte';
@@ -26,7 +27,10 @@
   function getBodyHtml(email: any): string {
     if (email.htmlBody?.length > 0) {
       const part = email.htmlBody[0];
-      if (email.bodyValues?.[part.partId]) return email.bodyValues[part.partId].value;
+      if (email.bodyValues?.[part.partId]) {
+        // Sanitize HTML to prevent XSS from incoming emails
+        return DOMPurify.sanitize(email.bodyValues[part.partId].value);
+      }
     }
     if (email.textBody?.length > 0) {
       const part = email.textBody[0];

@@ -11,18 +11,7 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .manage(session.clone())
-        .setup(move |app| {
-            // Store session arc so connect_jmap can start sync with it
-            let handle = app.handle().clone();
-            let session = Arc::clone(&session);
-            // We can't easily pass the Arc back through State, so we start sync
-            // from the connect command via a setup closure trick:
-            // The Arc is already managed by Tauri — commands access it via State.
-            // For sync, we clone the Arc here and store it for the connect command.
-            let _ = (handle, session); // used by connect_jmap via State
-            Ok(())
-        })
+        .manage(session)
         .invoke_handler(tauri::generate_handler![
             commands::connect_jmap,
             commands::disconnect_jmap,

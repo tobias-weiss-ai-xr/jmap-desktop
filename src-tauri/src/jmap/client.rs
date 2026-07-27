@@ -368,12 +368,30 @@ pub async fn destroy_emails(
 }
 
 /// Send an email — creates Email + EmailSubmission in one request.
+///
+/// Per RFC 8620 §4.1: a create id MUST be resolved in a previous method call.
+/// So Email/set (creating #c1) must come FIRST, EmailSubmission/set (referencing #c1) AFTER.
 pub async fn submit_email(
     session: &JmapSessionManager,
     account_id: &str,
     if_in_state: Option<&str>,
     email_create: Option<serde_json::Value>,
 ) -> AppResult<serde_json::Value> {
+    let mut method_calls = Vec::new();
+
+    // Email/set MUST come first — it creates the email with id "c1"
+    if let Some(email_create) = email_create {
+        let mut email_args = serde_json::json!({
+            "accountId": account_id,
+            "create": { "c1": email_create }
+        });
+        if let Some(state) = if_in_state {
+            email_args["ifInState"] = serde_json::json!(state);
+        }
+        method_calls.push(("Email/set".into(), email_args, "es1".into()));
+    }
+
+    // EmailSubmission/set comes AFTER — it references the email created as #c1
     let mut submission_args = serde_json::json!({
         "accountId": account_id,
         "create": {
@@ -385,24 +403,7 @@ pub async fn submit_email(
     if let Some(state) = if_in_state {
         submission_args["ifInState"] = serde_json::json!(state);
     }
-
-    let mut method_calls = vec![(
-        "EmailSubmission/set".into(),
-        submission_args,
-        "ms1".into(),
-    )];
-
-    if let Some(email_create) = email_create {
-        let mut email_args = serde_json::json!({
-            "accountId": account_id,
-            "create": { "c1": email_create }
-        });
-        if let Some(state) = if_in_state {
-            email_args["ifInState"] = serde_json::json!(state);
-        }
-        // Email/set must come AFTER EmailSubmission/set for the #c1 ref to work
-        method_calls.push(("Email/set".into(), email_args, "es1".into()));
-    }
+    method_calls.push(("EmailSubmission/set".into(), submission_args, "ms1".into()));
 
     let responses = session
         .request(

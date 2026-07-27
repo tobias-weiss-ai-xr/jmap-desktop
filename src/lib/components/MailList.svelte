@@ -48,6 +48,40 @@
     e.preventDefault();
     toggleFlag(id, flagged);
   }
+
+  // Keyboard navigation: j/k to move up/down, Enter to select
+  function handleListKeydown(e: KeyboardEvent) {
+    const ids = $emailIds;
+    if (ids.length === 0) return;
+    const currentIdx = ids.indexOf($selectedEmailId ?? '');
+
+    if (e.key === 'j' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const next = currentIdx < ids.length - 1 ? currentIdx + 1 : 0;
+      selectedEmailId.set(ids[next]);
+      scrollToItem(ids[next]);
+    } else if (e.key === 'k' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      const prev = currentIdx > 0 ? currentIdx - 1 : ids.length - 1;
+      selectedEmailId.set(ids[prev]);
+      scrollToItem(ids[prev]);
+    } else if (e.key === 'x') {
+      // Flag/unflag current
+      const id = $selectedEmailId;
+      const email = id ? $emails.get(id) : null;
+      if (id && email) toggleFlag(id, isFlagged(email));
+    } else if (e.key === 'Delete' || e.key === '#') {
+      // Delete current (dispatches custom event for MailView to handle)
+      if ($selectedEmailId) {
+        window.dispatchEvent(new CustomEvent('jmap-delete-current'));
+      }
+    }
+  }
+
+  function scrollToItem(id: string) {
+ const el = document.querySelector(`[data-email-id="${id}"]`);
+    el?.scrollIntoView({ block: 'nearest' });
+  }
 </script>
 
 <div class="mail-list" role="list" aria-label="Email list">
@@ -56,7 +90,7 @@
   {:else if $emailIds.length === 0}
     <div class="empty">No emails</div>
   {:else}
-    <div class="mail-items">
+    <div class="mail-items" role="listbox" onkeydown={handleListKeydown} tabindex="-1">
       {#each $emailIds as id (id)}
         {@const email = $emails.get(id)}
         {#if email}
@@ -70,6 +104,7 @@
             role="button"
             tabindex="0"
             aria-selected={$selectedEmailId === id}
+            data-email-id={id}
             onclick={() => handleSelect(id)}
             onkeydown={(e) => handleSelectKeydown(e, id)}
             oncontextmenu={(e) => handleContextMenu(e, id, flagged)}

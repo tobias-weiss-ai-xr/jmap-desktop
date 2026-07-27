@@ -22,3 +22,5 @@ reqwest = { version = "0.12", features = ["json", "rustls-tls", "stream"], defau
 thiserror = "2"
 url = "2"
 futures-util = "0.3"
+base64 = "0.22"
+zeroize = { version = "1", features = ["derive"] }

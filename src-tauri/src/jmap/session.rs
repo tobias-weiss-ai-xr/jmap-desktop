@@ -1,14 +1,16 @@
+use base64::Engine;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
+use zeroize::Zeroize;
 
 use crate::error::{AppError, AppResult};
 use tauri::Emitter;
 
-/// Connection settings — password intentionally excluded from Debug.
-#[derive(Clone, Serialize, Deserialize)]
+/// Connection settings — password intentionally excluded from Debug and serialization.
+#[derive(Clone, Serialize, Deserialize, Zeroize)]
 #[serde(rename_all = "camelCase")]
 pub struct ConnectionSettings {
     pub server_url: String,
@@ -24,29 +26,6 @@ impl std::fmt::Debug for ConnectionSettings {
             .field("username", &self.username)
             .field("password", &"[REDACTED]")
             .finish()
-    }
-}
-
-impl Drop for ConnectionSettings {
-    fn drop(&mut self) {
-        // Zero the password on drop
-        self.password.zeroize();
-        self.server_url.zeroize();
-    }
-}
-
-/// Zeroize a string's contents.
-trait Zeroize {
-    fn zeroize(&mut self);
-}
-impl Zeroize for String {
-    fn zeroize(&mut self) {
-        unsafe {
-            for b in self.as_bytes_mut() {
-                *b = 0;
-            }
-        }
-        self.clear();
     }
 }
 
@@ -134,9 +113,10 @@ impl JmapSessionManager {
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 let auth = format!("{}:{}", settings.username, settings.password);
+                let encoded = base64::engine::general_purpose::STANDARD.encode(auth.as_bytes());
                 headers.insert(
                     reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&format!("Basic {}", base64_encode(&auth)))
+                    reqwest::header::HeaderValue::from_str(&format!("Basic {}", encoded))
                         .unwrap(),
                 );
                 headers
@@ -167,7 +147,10 @@ impl JmapSessionManager {
         self.stop_sync();
         *self.session.lock().unwrap() = None;
         *self.client.lock().unwrap() = None;
-        *self.credentials.lock().unwrap() = None;
+        // Zeroize credentials on disconnect
+        if let Some(mut creds) = self.credentials.lock().unwrap().take() {
+            creds.zeroize();
+        }
         *self.mailbox_state.lock().unwrap() = None;
         *self.email_state.lock().unwrap() = None;
     }
@@ -368,11 +351,13 @@ async fn eventsource_loop(session: &JmapSessionManager, app: &tauri::AppHandle) 
         Err(_) => return,
     };
 
+    // IMPORTANT: Do NOT set a timeout for streaming responses.
+    // Duration::from_secs(0) means "timeout immediately" in reqwest.
+    // We must omit .timeout() entirely for SSE.
     let resp = match client
         .get(&es_url)
-        .header("Accept", "text/event-stream")
-        .header("Cache-Control", "no-cache")
-        .timeout(Duration::from_secs(0)) // streaming — no timeout
+        .header(reqwest::header::ACCEPT, "text/event-stream")
+        .header(reqwest::header::CACHE_CONTROL, "no-cache")
         .send()
         .await
     {
@@ -391,7 +376,6 @@ async fn eventsource_loop(session: &JmapSessionManager, app: &tauri::AppHandle) 
     use futures_util::StreamExt;
     let mut stream = resp.bytes_stream();
     let mut buffer = String::new();
-    let mut current_event = String::new();
 
     loop {
         match stream.next().await {
@@ -404,19 +388,14 @@ async fn eventsource_loop(session: &JmapSessionManager, app: &tauri::AppHandle) 
                     buffer = buffer[pos + 1..].to_string();
 
                     if line.is_empty() {
-                        // End of event — dispatch
-                        if !current_event.is_empty() {
-                            current_event.clear();
-                        }
+                        // End of event — nothing to dispatch yet
                     } else if let Some(data) = line.strip_prefix("data:") {
-                        // We got data — trigger a poll
+                        // Data received — trigger a poll for changes
                         if !data.trim().is_empty() {
                             poll_changes(session, app).await;
                         }
-                    } else if let Some(event) = line.strip_prefix("event:") {
-                        current_event = event.trim().to_string();
                     }
-                    // Ignore id:, retry:, comments
+                    // Ignore id:, retry:, event:, comments
                 }
             }
             _ => {
@@ -425,24 +404,4 @@ async fn eventsource_loop(session: &JmapSessionManager, app: &tauri::AppHandle) 
             }
         }
     }
-}
-
-fn base64_encode(input: &str) -> String {
-    const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let bytes = input.as_bytes();
-    let mut result = String::new();
-    for chunk in bytes.chunks(3) {
-        let mut n = 0u32;
-        for (i, &b) in chunk.iter().enumerate() {
-            n |= (b as u32) << (16 - 8 * i);
-        }
-        let padding = 3 - chunk.len();
-        for i in 0..(4 - padding) {
-            result.push(CHARS[((n >> (18 - 6 * i)) & 0x3F) as usize] as char);
-        }
-        for _ in 0..padding {
-            result.push('=');
-        }
-    }
-    result
 }

@@ -8,10 +8,10 @@
   let error = $state('');
   let connecting = $state(false);
 
-  // Auto-fill saved credentials
+  // Auto-fill saved credentials on mount (not reactive — avoids overwriting user input)
   $effect(() => {
     const saved = localStorage.getItem('jmap-settings');
-    if (saved && !$connected) {
+    if (saved) {
       try {
         const settings = JSON.parse(saved);
         serverUrl = settings.serverUrl || '';

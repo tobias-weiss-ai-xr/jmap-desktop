@@ -97,20 +97,14 @@ pub async fn query_emails(
     sort: serde_json::Value,
     limit: Option<u64>,
     position: Option<u64>,
-    anchor: Option<String>,
 ) -> Result<serde_json::Value, String> {
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
-    let filter_val = if let Some(ref a) = anchor {
-        serde_json::json!({ "inMailbox": a })
-    } else {
-        filter
-    };
     let result = client::query_emails(
         &session,
         &account_id,
-        filter_val,
+        filter,
         sort,
         limit.unwrap_or(50),
         position.unwrap_or(0),

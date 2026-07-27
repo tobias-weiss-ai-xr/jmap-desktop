@@ -11,7 +11,6 @@
 
   // Search
   let searchQuery = $state('');
-  let searchOpen = $state(false);
 
   function handleSearch() {
     if (searchQuery.trim()) {

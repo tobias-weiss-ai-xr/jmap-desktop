@@ -4,21 +4,20 @@
   import Sidebar from '$lib/components/Sidebar.svelte';
   import MailList from '$lib/components/MailList.svelte';
   import MailView from '$lib/components/MailView.svelte';
+  import Toast from '$lib/components/Toast.svelte';
   import {
-    selectedMailboxId, selectedEmailId, emailQueryState,
-    connected, isSyncing,
+    selectedMailboxId, selectedEmailId,
+    connected,
   } from '$lib/jmap/stores.js';
   import {
-    connect, disconnect, fetchEmailsForMailbox,
-    refreshMailboxes, searchEmails, setupEventListeners,
+    connect, fetchEmailsForMailbox, searchEmails,
   } from '$lib/jmap/actions.js';
 
   let restored = $state(false);
   let searchRestore = $state<(() => void) | null>(null);
 
   onMount(() => {
-    // Try to restore session — note: password is NOT persisted for security.
-    // User will need to re-enter password if the app restarts.
+    // Try to restore session from localStorage
     const saved = localStorage.getItem('jmap-settings');
     if (saved) {
       try {
@@ -26,7 +25,6 @@
         if (settings.serverUrl && settings.username && settings.password) {
           connect(settings).then(() => { restored = true; }).catch(() => {});
         }
-        // If no password, just pre-fill settings page — don't attempt connect
       } catch (_e) { /* ignore stale settings */ }
     }
 
@@ -36,28 +34,30 @@
       if (query) handleSearch(query);
     }
     window.addEventListener('jmap-search', onSearch);
-    return () => {
-      window.removeEventListener('jmap-search', onSearch);
-      // Don't call disconnect here — cleanup happens when user explicitly disconnects
-    };
+    return () => window.removeEventListener('jmap-search', onSearch);
   });
 
-  // Fetch emails when mailbox selection changes (but not on initial mount unless restored)
+  // Fetch emails when mailbox selection changes (not on initial mount unless restored)
   $effect(() => {
     const mailboxId = $selectedMailboxId;
     if (mailboxId && (restored || $connected)) {
+      // Clear any active search when switching mailboxes
+      if (searchRestore) {
+        searchRestore = null;
+      }
       fetchEmailsForMailbox(mailboxId);
     }
   });
 
-  // Auto-mark as read when email is selected
+  // Auto-mark as read when email is selected (1s delay for UX)
   $effect(() => {
     const emailId = $selectedEmailId;
     if (emailId && $connected) {
-      // Mark as read after a brief delay (optimistic UX)
       const timer = setTimeout(async () => {
-        const { markAsRead } = await import('$lib/jmap/actions.js');
-        try { await markAsRead(emailId); } catch (_) {}
+        try {
+          const { markAsRead } = await import('$lib/jmap/actions.js');
+          await markAsRead(emailId);
+        } catch (_e) {}
       }, 1000);
       return () => clearTimeout(timer);
     }
@@ -69,9 +69,10 @@
   }
 
   function handleClearSearch() {
-    if (searchRestore) {
-      searchRestore();
-      searchRestore = null;
+    const restore = searchRestore;
+    searchRestore = null;
+    if (restore) {
+      restore();
     }
   }
 </script>
@@ -88,6 +89,8 @@
   <MailList />
   <MailView />
 </AppShell>
+
+<Toast />
 
 <style>
   .search-bar-top {

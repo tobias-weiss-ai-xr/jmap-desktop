@@ -1800,6 +1800,7 @@ dependencies = [
 name = "jmap-desktop"
 version = "0.1.0"
 dependencies = [
+ "base64 0.22.1",
  "futures-util",
  "reqwest 0.12.28",
  "serde",
@@ -1810,6 +1811,7 @@ dependencies = [
  "thiserror 2.0.19",
  "tokio",
  "url",
+ "zeroize",
 ]
 
 [[package]]
@@ -5149,6 +5151,20 @@ name = "zeroize"
 version = "1.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e13c156562582aa81c60cb29407084cdb54c4164760106ab78e6c5b0858cf64e"
+dependencies = [
+ "zeroize_derive",
+]
+
+[[package]]
+name = "zeroize_derive"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3c50655cbb0fe3fc43170059e702f1ce5e19b84cec58dc87b037a09935c2f328"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "zerotrie"
