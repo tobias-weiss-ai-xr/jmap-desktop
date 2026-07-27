@@ -1,34 +1,32 @@
 <script lang="ts">
   import { emailIds, emails, selectedEmailId, isLoadingEmails } from '$lib/jmap/stores.js';
+  import { toggleFlag, deleteEmail } from '$lib/jmap/actions.js';
 
-  // Date formatting
   function formatRelative(dateStr: string): string {
     const date = new Date(dateStr);
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
     const diffDays = Math.floor(diffMs / 86400000);
-
-    if (diffDays === 0) {
-      return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
-    } else if (diffDays === 1) {
-      return 'Yesterday';
-    } else if (diffDays < 7) {
-      return date.toLocaleDateString(undefined, { weekday: 'short' });
-    } else {
-      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-    }
+    if (diffDays === 0) return date.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+    if (diffDays === 1) return 'Yesterday';
+    if (diffDays < 7) return date.toLocaleDateString(undefined, { weekday: 'short' });
+    return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
   }
 
-  // Format sender name
   function formatSender(email: any): string {
     const from = email.from?.[0];
     if (!from) return '(no sender)';
     return from.name || from.email;
   }
 
-  // Truncate preview
   function truncate(str: string, len: number = 80): string {
     return str.length > len ? str.slice(0, len) + '…' : str;
+  }
+
+  function handleContextMenu(e: MouseEvent, id: string, flagged: boolean) {
+    e.preventDefault();
+    // For now just toggle flag on right-click
+    toggleFlag(id, flagged);
   }
 </script>
 
@@ -42,13 +40,19 @@
       {#each $emailIds as id (id)}
         {@const email = $emails.get(id)}
         {#if email}
+          {@const flagged = email.keywords.$flagged ?? email.keywords.$starred ?? false}
+          {@const seen = !!email.keywords.$seen}
           <button
             class="mail-item"
             class:selected={$selectedEmailId === id}
-            class:unread={!email.keywords.$seen}
+            class:unread={!seen}
             onclick={() => (selectedEmailId.set(id))}
+            oncontextmenu={(e) => handleContextMenu(e, id, flagged)}
           >
             <div class="mail-item-header">
+              <span class="mail-flag" class:flagged={flagged} onclick={(e) => { e.stopPropagation(); toggleFlag(id, flagged); }}>
+                {flagged ? '⭐' : '☆'}
+              </span>
               <span class="mail-sender">{formatSender(email)}</span>
               <span class="mail-date">{formatRelative(email.receivedAt)}</span>
             </div>
@@ -74,10 +78,7 @@
     background: var(--bg-primary);
   }
 
-  .mail-items {
-    flex: 1;
-    overflow-y: auto;
-  }
+  .mail-items { flex: 1; overflow-y: auto; }
 
   .mail-item {
     display: flex;
@@ -95,25 +96,11 @@
     position: relative;
   }
 
-  .mail-item:hover {
-    background: var(--bg-hover);
-  }
-
-  .mail-item.selected {
-    background: var(--bg-selected);
-    color: var(--fg-primary);
-  }
-
-  .mail-item.unread {
-    border-left: 3px solid var(--accent);
-    padding-left: 11px;
-  }
-
+  .mail-item:hover { background: var(--bg-hover); }
+  .mail-item.selected { background: var(--bg-selected); color: var(--fg-primary); }
+  .mail-item.unread { border-left: 3px solid var(--accent); padding-left: 11px; }
   .mail-item.unread .mail-sender,
-  .mail-item.unread .mail-subject {
-    font-weight: 600;
-    color: var(--fg-primary);
-  }
+  .mail-item.unread .mail-subject { font-weight: 600; color: var(--fg-primary); }
 
   .mail-item-header {
     display: flex;
@@ -121,47 +108,28 @@
     align-items: baseline;
   }
 
+  .mail-flag {
+    font-size: 14px;
+    cursor: pointer;
+    opacity: 0.5;
+    margin-right: 4px;
+  }
+
+  .mail-flag.flagged { opacity: 1; }
+  .mail-flag:hover { opacity: 1; }
+
   .mail-sender {
     font-size: 13px;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     flex: 1;
-    margin-right: 8px;
   }
 
-  .mail-date {
-    font-size: 11px;
-    color: var(--fg-muted);
-    white-space: nowrap;
-  }
+  .mail-date { font-size: 11px; color: var(--fg-muted); white-space: nowrap; margin-left: 8px; }
+  .mail-subject { font-size: 13px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mail-preview { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .mail-attachment { position: absolute; right: 14px; bottom: 8px; font-size: 12px; }
 
-  .mail-subject {
-    font-size: 13px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .mail-preview {
-    font-size: 12px;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
-
-  .mail-attachment {
-    position: absolute;
-    right: 14px;
-    bottom: 8px;
-    font-size: 12px;
-  }
-
-  .loading,
-  .empty {
-    padding: 32px;
-    text-align: center;
-    color: var(--fg-muted);
-    font-size: 13px;
-  }
+  .loading, .empty { padding: 32px; text-align: center; color: var(--fg-muted); font-size: 13px; }
 </style>

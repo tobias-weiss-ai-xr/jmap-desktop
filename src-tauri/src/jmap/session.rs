@@ -1,9 +1,10 @@
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use crate::error::{AppError, AppResult};
+use tauri::Emitter;
 
 /// Connection settings provided by the frontend.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -49,7 +50,6 @@ pub struct JmapAccount {
     pub account_capabilities: serde_json::Value,
 }
 
-/// JMAP request envelope (RFC 8620 §2.6).
 #[derive(Debug, Serialize)]
 struct JmapRequest {
     #[serde(rename = "using")]
@@ -58,29 +58,20 @@ struct JmapRequest {
     method_calls: Vec<(String, serde_json::Value, String)>,
 }
 
-/// JMAP response envelope.
 #[derive(Debug, Deserialize)]
 struct JmapResponse {
-    #[serde(rename = "sessionState")]
-    session_state: String,
     #[serde(rename = "methodResponses")]
     method_responses: Vec<(String, serde_json::Value, String)>,
-    #[serde(rename = "createdIds")]
-    created_ids: Option<HashMap<String, String>>,
 }
 
-/// Manages the JMAP session: HTTP client, session discovery, and request dispatch.
+/// Manages the JMAP session: HTTP client, session discovery, request dispatch, and sync.
 pub struct JmapSessionManager {
-    /// The active session, if connected.
     session: Mutex<Option<JmapSession>>,
-    /// HTTP client for JMAP requests.
     client: Mutex<Option<Client>>,
-    /// Auth credentials (stored for reconnection / EventSource).
     credentials: Mutex<Option<ConnectionSettings>>,
-    /// Cached mailbox state.
     mailbox_state: Mutex<Option<String>>,
-    /// Cached email state.
     email_state: Mutex<Option<String>>,
+    sync_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Default for JmapSessionManager {
@@ -91,60 +82,49 @@ impl Default for JmapSessionManager {
             credentials: Mutex::new(None),
             mailbox_state: Mutex::new(None),
             email_state: Mutex::new(None),
+            sync_handle: Mutex::new(None),
         }
     }
 }
 
 impl JmapSessionManager {
-    /// Discover the JMAP session by querying `.well-known/jmap` or the root URL.
     pub async fn connect(&self, settings: ConnectionSettings) -> AppResult<JmapSession> {
         let server_url = settings.server_url.trim_end_matches('/');
-        let base_url = url::Url::parse(server_url)
-            .map_err(|e| AppError::InvalidUrl(e.to_string()))?;
+        let _ = url::Url::parse(server_url).map_err(|e| AppError::InvalidUrl(e.to_string()))?;
 
-        // Build a client with Basic auth
         let client = Client::builder()
             .default_headers({
                 let mut headers = reqwest::header::HeaderMap::new();
                 let auth = format!("{}:{}", settings.username, settings.password);
-                let encoded = base64_encode(&auth);
                 headers.insert(
                     reqwest::header::AUTHORIZATION,
-                    reqwest::header::HeaderValue::from_str(&format!("Basic {}", encoded))
-                        .unwrap(),
+                    reqwest::header::HeaderValue::from_str(&format!("Basic {}", base64_encode(&auth))).unwrap(),
                 );
                 headers
             })
             .build()?;
 
-        // Try .well-known/jmap first
         let well_known_url = format!("{}/.well-known/jmap", server_url);
         let response = client.get(&well_known_url).send().await;
 
-        let session: JmapSession = match response {
+        let jmap_session: JmapSession = match response {
             Ok(resp) if resp.status().is_success() => resp.json().await?,
             _ => {
-                // Fallback: try root URL with Accept: application/json
-                let resp = client
-                    .get(server_url)
-                    .header("Accept", "application/json")
-                    .send()
-                    .await?
-                    .error_for_status()
-                    .map_err(|e| AppError::AuthFailed)?;
+                let resp = client.get(server_url).header("Accept", "application/json").send().await?
+                    .error_for_status().map_err(|_| AppError::AuthFailed)?;
                 resp.json().await?
             }
         };
 
-        *self.session.lock().unwrap() = Some(session.clone());
+        *self.session.lock().unwrap() = Some(jmap_session.clone());
         *self.client.lock().unwrap() = Some(client);
         *self.credentials.lock().unwrap() = Some(settings);
 
-        Ok(session)
+        Ok(jmap_session)
     }
 
-    /// Disconnect and clear state.
     pub fn disconnect(&self) {
+        self.stop_sync();
         *self.session.lock().unwrap() = None;
         *self.client.lock().unwrap() = None;
         *self.credentials.lock().unwrap() = None;
@@ -152,25 +132,14 @@ impl JmapSessionManager {
         *self.email_state.lock().unwrap() = None;
     }
 
-    /// Get a reference to the current session.
     pub fn get_session(&self) -> AppResult<JmapSession> {
-        self.session
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(AppError::NotConnected)
+        self.session.lock().unwrap().clone().ok_or(AppError::NotConnected)
     }
 
-    /// Get the HTTP client.
-    fn get_client(&self) -> AppResult<Client> {
-        self.client
-            .lock()
-            .unwrap()
-            .clone()
-            .ok_or(AppError::NotConnected)
+    pub fn get_client(&self) -> AppResult<Client> {
+        self.client.lock().unwrap().clone().ok_or(AppError::NotConnected)
     }
 
-    /// Send a JMAP request and return the raw method responses.
     pub async fn request(
         &self,
         using: &[&str],
@@ -178,78 +147,140 @@ impl JmapSessionManager {
     ) -> AppResult<Vec<(String, serde_json::Value, String)>> {
         let client = self.get_client()?;
         let session = self.get_session()?;
-
-        let body = JmapRequest {
-            using: using.iter().map(|s| s.to_string()).collect(),
-            method_calls,
-        };
-
-        let resp = client
-            .post(&session.api_url)
-            .json(&body)
-            .send()
-            .await?;
-
+        let body = JmapRequest { using: using.iter().map(|s| s.to_string()).collect(), method_calls };
+        let resp = client.post(&session.api_url).json(&body).send().await?;
         if !resp.status().is_success() {
-            let status = resp.status().as_u16();
-            let detail = resp.text().await.unwrap_or_default();
-            return Err(AppError::Api { status, detail });
+            return Err(AppError::Api { status: resp.status().as_u16(), detail: resp.text().await.unwrap_or_default() });
         }
-
         let jmap_resp: JmapResponse = resp.json().await?;
         Ok(jmap_resp.method_responses)
     }
 
-    /// Get the primary account ID for mail.
     pub fn primary_mail_account_id(&self) -> AppResult<String> {
         let session = self.get_session()?;
-        session
-            .primary_accounts
-            .get("urn:ietf:params:jmap:mail")
-            .cloned()
+        session.primary_accounts.get("urn:ietf:params:jmap:mail").cloned()
             .ok_or_else(|| AppError::Session("No primary mail account found".into()))
     }
 
-    /// Set mailbox state (for change tracking).
-    pub fn set_mailbox_state(&self, state: String) {
-        *self.mailbox_state.lock().unwrap() = Some(state);
+    pub fn set_mailbox_state(&self, state: String) { *self.mailbox_state.lock().unwrap() = Some(state); }
+    pub fn mailbox_state(&self) -> Option<String> { self.mailbox_state.lock().unwrap().clone() }
+    pub fn set_email_state(&self, state: String) { *self.email_state.lock().unwrap() = Some(state); }
+    pub fn email_state(&self) -> Option<String> { self.email_state.lock().unwrap().clone() }
+
+    pub fn event_source_url(&self) -> Option<String> {
+        self.session.lock().unwrap().as_ref().and_then(|s| s.event_source_url.clone())
     }
 
-    /// Get cached mailbox state.
-    pub fn mailbox_state(&self) -> Option<String> {
-        self.mailbox_state.lock().unwrap().clone()
+    pub fn upload_url(&self) -> String {
+        self.session.lock().unwrap().as_ref().map(|s| s.upload_url.clone()).unwrap_or_default()
     }
 
-    /// Set email state (for change tracking).
-    pub fn set_email_state(&self, state: String) {
-        *self.email_state.lock().unwrap() = Some(state);
+    /// Start background sync (polling + EventSource).
+    /// Must be called with an Arc<Self> so the sync tasks can hold a reference.
+    pub fn start_sync(self: &Arc<Self>, app: tauri::AppHandle) {
+        self.stop_sync();
+
+        let arc_poll = Arc::clone(self);
+        let arc_es = Arc::clone(self);
+        let app_poll = app.clone();
+        let app_es = app;
+
+        let handle = tokio::spawn(async move {
+            let _ = app_poll.emit("jmap://sync-status", "starting");
+            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+            poll_changes(&arc_poll, &app_poll).await;
+
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(30));
+            loop {
+                ticker.tick().await;
+                poll_changes(&arc_poll, &app_poll).await;
+            }
+        });
+
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+            eventsource_loop(&arc_es, &app_es).await;
+        });
+
+        *self.sync_handle.lock().unwrap() = Some(handle);
     }
 
-    /// Get cached email state.
-    pub fn email_state(&self) -> Option<String> {
-        self.email_state.lock().unwrap().clone()
+    pub fn stop_sync(&self) {
+        if let Some(handle) = self.sync_handle.lock().unwrap().take() {
+            handle.abort();
+        }
     }
 }
 
-// Simple base64 encode (avoid depending on base64 crate for just this)
+/// Poll for email and mailbox changes, emit Tauri events.
+async fn poll_changes(session: &JmapSessionManager, app: &tauri::AppHandle) {
+    let _ = app.emit("jmap://sync-status", "syncing");
+    if let Ok(account_id) = session.primary_mail_account_id() {
+        if let Some(old) = session.email_state() {
+            if let Ok(changes) = crate::jmap::client::get_email_changes(session, &account_id, &old, None).await {
+                if !changes.created.is_empty() || !changes.updated.is_empty() || !changes.destroyed.is_empty() {
+                    let _ = app.emit("jmap://emails-changed", serde_json::json!({
+                        "created": changes.created, "updated": changes.updated, "destroyed": changes.destroyed,
+                    }));
+                }
+            }
+        }
+        if let Some(old) = session.mailbox_state() {
+            if let Ok(changes) = crate::jmap::client::get_mailbox_changes(session, &account_id, &old).await {
+                if !changes.created.is_empty() || !changes.updated.is_empty() || !changes.destroyed.is_empty() {
+                    let _ = app.emit("jmap://mailboxes-changed", serde_json::json!({
+                        "created": changes.created, "updated": changes.updated, "destroyed": changes.destroyed,
+                    }));
+                }
+            }
+        }
+    }
+    let _ = app.emit("jmap://sync-status", "synced");
+}
+
+/// EventSource push listener.
+async fn eventsource_loop(session: &JmapSessionManager, app: &tauri::AppHandle) {
+    let es_url = match session.event_source_url() {
+        Some(u) => u,
+        None => return,
+    };
+    let client = match session.get_client() { Ok(c) => c, Err(_) => return, };
+    let resp = match client.get(&es_url).header("Accept", "text/event-stream").send().await {
+        Ok(r) => r,
+        Err(e) => { eprintln!("EventSource failed: {}", e); return; }
+    };
+    if !resp.status().is_success() { return; }
+
+    let _ = app.emit("jmap://sync-status", "push-connected");
+    use futures_util::StreamExt;
+    let mut stream = resp.bytes_stream();
+    let mut buffer = String::new();
+
+    loop {
+        match stream.next().await {
+            Some(Ok(bytes)) => {
+                buffer.push_str(&String::from_utf8_lossy(&bytes));
+                while let Some(pos) = buffer.find("\n\n") {
+                    let event_text = buffer[..pos].to_string();
+                    buffer = buffer[pos + 2..].to_string();
+                    if event_text.contains("state") { poll_changes(session, app).await; }
+                }
+            }
+            _ => { let _ = app.emit("jmap://sync-status", "push-disconnected"); break; }
+        }
+    }
+}
+
 fn base64_encode(input: &str) -> String {
     const CHARS: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let bytes = input.as_bytes();
     let mut result = String::new();
-
     for chunk in bytes.chunks(3) {
         let mut n = 0u32;
-        for (i, &b) in chunk.iter().enumerate() {
-            n |= (b as u32) << (16 - 8 * i);
-        }
+        for (i, &b) in chunk.iter().enumerate() { n |= (b as u32) << (16 - 8 * i); }
         let padding = 3 - chunk.len();
-        for i in 0..(4 - padding) {
-            result.push(CHARS[((n >> (18 - 6 * i)) & 0x3F) as usize] as char);
-        }
-        for _ in 0..padding {
-            result.push('=');
-        }
+        for i in 0..(4 - padding) { result.push(CHARS[((n >> (18 - 6 * i)) & 0x3F) as usize] as char); }
+        for _ in 0..padding { result.push('='); }
     }
-
     result
 }

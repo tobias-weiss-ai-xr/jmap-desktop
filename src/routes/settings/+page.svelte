@@ -1,5 +1,6 @@
 <script lang="ts">
   import { invoke } from '@tauri-apps/api/core';
+  import { onMount } from 'svelte';
   import { session, connected, mailboxes } from '$lib/jmap/stores.js';
 
   let serverUrl = $state('');
@@ -7,6 +8,18 @@
   let password = $state('');
   let error = $state('');
   let connecting = $state(false);
+
+  // Auto-fill saved credentials
+  onMount(() => {
+    const saved = localStorage.getItem('jmap-settings');
+    if (saved) {
+      try {
+        const settings = JSON.parse(saved);
+        serverUrl = settings.serverUrl || '';
+        username = settings.username || '';
+      } catch (e) { /* ignore */ }
+    }
+  });
 
   async function handleConnect() {
     connecting = true;
@@ -19,6 +32,11 @@
           password,
         },
       });
+      // Save credentials (password not persisted)
+      localStorage.setItem('jmap-settings', JSON.stringify({
+        serverUrl: serverUrl.replace(/\/$/, ''),
+        username,
+      }));
       session.set(result as any);
       // Load mailboxes
       const mbs: any[] = await invoke('get_mailboxes');
@@ -36,6 +54,7 @@
     } catch (_) { /* ignore */ }
     session.set(null);
     mailboxes.set([]);
+    localStorage.removeItem('jmap-settings');
   }
 </script>
 

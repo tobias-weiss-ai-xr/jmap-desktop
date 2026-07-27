@@ -58,6 +58,14 @@ export interface JMAPAccount {
   accountCapabilities: Record<string, Record<string, unknown>>;
 }
 
+// --- Connection Settings ---
+
+export interface ConnectionSettings {
+  serverUrl: string;
+  username: string;
+  password: string;
+}
+
 // --- Mailbox (RFC 8621 §2) ---
 
 export interface Mailbox {
@@ -171,8 +179,8 @@ export interface EmailFilterCondition {
   after?: string;
   subject?: string | null;
   from?: string | null;
-  to?: string | EmailAddressFilter | null;
-  cc?: string | EmailAddressFilter | null;
+  to?: string | null;
+  cc?: string | null;
   hasKeyword?: string | null;
   notKeyword?: string | null;
   hasAttachment?: boolean | null;
