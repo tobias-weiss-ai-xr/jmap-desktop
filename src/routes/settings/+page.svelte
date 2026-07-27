@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import { session, connected, mailboxes } from '$lib/jmap/stores.js';
   import { connect, disconnect } from '$lib/jmap/actions.js';
 
@@ -9,7 +10,7 @@
   let error = $state('');
   let connecting = $state(false);
 
-  // Auto-fill saved credentials on mount (not reactive — avoids overwriting user input)
+  // Auto-fill saved credentials on mount
   onMount(() => {
     const saved = localStorage.getItem('jmap-settings');
     if (saved) {
@@ -32,8 +33,6 @@
         password,
       };
       await connect(settings);
-
-      // Save credentials including password (encrypted in future)
       localStorage.setItem('jmap-settings', JSON.stringify(settings));
     } catch (e: any) {
       error = e.toString();
@@ -55,7 +54,9 @@
 </svelte:head>
 
 <div class="settings-page">
-  <h1>Settings</h1>
+  <a href="/" class="back-link">← Back to Mail</a>
+
+  <h1>⚙ Settings</h1>
 
   <section class="settings-section">
     <h2>JMAP Account</h2>
@@ -85,11 +86,24 @@
       </form>
     {:else}
       <div class="connected-info">
-        <p>✅ Connected as <strong>{$session?.username}</strong></p>
+        <p class="connected-status">✅ Connected as <strong>{$session?.username}</strong></p>
         <p class="muted">{$session?.accounts[$session?.primaryAccounts?.['urn:ietf:params:jmap:mail']]?.name ?? ''}</p>
-        <button class="btn" onclick={handleDisconnect}>Disconnect</button>
+        <p class="muted">Server: <code>{$session?.apiUrl?.split('/')[2] ?? ''}</code></p>
+        <button class="btn btn-danger-outline" onclick={handleDisconnect}>Disconnect</button>
       </div>
     {/if}
+  </section>
+
+  <section class="settings-section">
+    <h2>Environment Variables</h2>
+    <p class="settings-note">
+      Set these to preconfigure the connection on launch (skips the connect screen):
+    </p>
+    <div class="env-vars">
+      <code>JMAP_SERVER_URL=https://mail.example.com</code>
+      <code>JMAP_USERNAME=user@example.com</code>
+      <code>JMAP_PASSWORD=your-token</code>
+    </div>
   </section>
 </div>
 
@@ -98,6 +112,17 @@
     max-width: 500px;
     margin: 0 auto;
     padding: 32px;
+  }
+
+  .back-link {
+    display: inline-block;
+    font-size: 13px;
+    color: var(--accent);
+    margin-bottom: 16px;
+  }
+
+  .back-link:hover {
+    text-decoration: underline;
   }
 
   h1 {
@@ -180,13 +205,52 @@
     cursor: not-allowed;
   }
 
+  .btn-danger-outline {
+    color: var(--danger);
+    border-color: var(--danger);
+    margin-top: 8px;
+  }
+
+  .btn-danger-outline:hover {
+    background: var(--danger);
+    color: var(--bg-primary);
+  }
+
   .connected-info {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
   }
 
   .connected-info p {
     font-size: 14px;
+  }
+
+  .connected-status {
+    font-size: 15px;
+    color: var(--success);
+  }
+
+  .settings-note {
+    font-size: 13px;
+    color: var(--fg-muted);
+    margin-bottom: 10px;
+    line-height: 1.5;
+  }
+
+  .env-vars {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+  }
+
+  .env-vars code {
+    font-size: 12px;
+    font-family: var(--font-mono);
+    background: var(--bg-tertiary);
+    color: var(--fg-secondary);
+    padding: 6px 10px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
   }
 </style>

@@ -5,6 +5,27 @@ use crate::jmap::client;
 use crate::jmap::{ConnectionSettings, JmapSessionManager};
 use tauri::{Emitter, State};
 
+// ── Configuration ──
+
+/// Check for preconfigured JMAP settings from environment variables.
+/// Returns ConnectionSettings if JMAP_SERVER_URL, JMAP_USERNAME, and JMAP_PASSWORD are all set.
+#[tauri::command]
+pub fn get_preconfigured_settings() -> Option<ConnectionSettings> {
+    let server_url = std::env::var("JMAP_SERVER_URL").ok()?;
+    let username = std::env::var("JMAP_USERNAME").ok()?;
+    let password = std::env::var("JMAP_PASSWORD").ok()?;
+
+    if server_url.is_empty() || username.is_empty() || password.is_empty() {
+        return None;
+    }
+
+    Some(ConnectionSettings {
+        server_url: server_url.trim_end_matches('/').to_string(),
+        username,
+        password,
+    })
+}
+
 // ── Connection ──
 
 #[tauri::command]

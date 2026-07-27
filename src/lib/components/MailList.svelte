@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { emailIds, emails, selectedEmailId, isLoadingEmails } from '$lib/jmap/stores.js';
+  import { emailIds, emails, selectedEmailId, selectedMailboxId, isLoadingEmails } from '$lib/jmap/stores.js';
   import { toggleFlag } from '$lib/jmap/actions.js';
 
   let listEl: HTMLDivElement | undefined = $state();
@@ -96,6 +96,8 @@
 <div class="mail-list" role="list" aria-label="Email list">
   {#if $isLoadingEmails}
     <div class="loading">Loading…</div>
+  {:else if $emailIds.length === 0 && !$selectedMailboxId}
+    <div class="empty">← Select a mailbox</div>
   {:else if $emailIds.length === 0}
     <div class="empty">No emails</div>
   {:else}

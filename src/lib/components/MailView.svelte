@@ -11,6 +11,18 @@
   let showDeleteConfirm = $state(false);
 
   // Close move menu when clicking outside
+  $effect(() => {
+    if (showMoveMenu) {
+      function onClick(e: MouseEvent) {
+        const target = e.target as HTMLElement;
+        if (!target.closest('.move-wrapper')) {
+          showMoveMenu = false;
+        }
+      }
+      window.addEventListener('click', onClick);
+      return () => window.removeEventListener('click', onClick);
+    }
+  });
   function closeMoveMenu() { showMoveMenu = false; }
   function handleMoveTo(mailboxId: string) {
     if (!$selectedEmailId) return;

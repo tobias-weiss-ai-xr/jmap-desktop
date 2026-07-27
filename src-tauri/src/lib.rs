@@ -13,6 +13,7 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .manage(session)
         .invoke_handler(tauri::generate_handler![
+            commands::get_preconfigured_settings,
             commands::connect_jmap,
             commands::disconnect_jmap,
             commands::get_session,

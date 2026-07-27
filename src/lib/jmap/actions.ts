@@ -14,6 +14,19 @@ import { getMailboxes as fetchMailboxes, queryEmails, getEmails } from './client
 import type { ConnectionSettings, Email, Mailbox } from './types.js';
 import { addError, addSuccess } from '$lib/toast.svelte.js';
 
+// ── Configuration ──
+
+/** Check for preconfigured settings from env vars (JMAP_SERVER_URL etc.) */
+export async function getPreconfiguredSettings(): Promise<ConnectionSettings | null> {
+  try {
+    const result = await invoke<any>('get_preconfigured_settings');
+    if (!result) return null;
+    return result as ConnectionSettings;
+  } catch (_e) {
+    return null;
+  }
+}
+
 // ── Connection ──
 
 export async function connect(settings: ConnectionSettings) {
