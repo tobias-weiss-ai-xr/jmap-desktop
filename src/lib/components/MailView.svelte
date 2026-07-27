@@ -10,6 +10,14 @@
   let showMoveMenu = $state(false);
   let showDeleteConfirm = $state(false);
 
+  // Close move menu when clicking outside
+  function closeMoveMenu() { showMoveMenu = false; }
+  function handleMoveTo(mailboxId: string) {
+    if (!$selectedEmailId) return;
+    moveToMailbox($selectedEmailId, mailboxId);
+    showMoveMenu = false;
+  }
+
   function formatAddress(addr: any): string {
     if (!addr) return '';
     return addr.name ? `${addr.name} <${addr.email}>` : addr.email;
@@ -91,15 +99,24 @@
     }
   }
 
-  // Listen for compose events from sidebar
+  // Listen for compose events from sidebar & delete events from keyboard
   $effect(() => {
     function onCompose() {
       composeMode = 'new';
       composeTarget = null;
       showCompose = true;
     }
+    function onDeleteCurrent() {
+      if ($selectedEmailId && !showCompose && $currentEmail) {
+        showDeleteConfirm = true;
+      }
+    }
     window.addEventListener('jmap-compose', onCompose);
-    return () => window.removeEventListener('jmap-compose', onCompose);
+    window.addEventListener('jmap-delete-current', onDeleteCurrent);
+    return () => {
+      window.removeEventListener('jmap-compose', onCompose);
+      window.removeEventListener('jmap-delete-current', onDeleteCurrent);
+    };
   });
 </script>
 
@@ -147,6 +164,23 @@
           {($currentEmail.keywords && $currentEmail.keywords.$seen) ? 'Mark unread' : 'Mark read'}
         </button>
         <div class="action-separator"></div>
+        <!-- Move dropdown -->
+        <div class="move-wrapper">
+          <button class="btn" onclick={() => showMoveMenu = !showMoveMenu}>📁 Move</button>
+          {#if showMoveMenu}
+            <div class="move-menu" role="menu">
+              {#each $mailboxes.filter(m => {
+                  const currentMboxId = Object.entries($currentEmail.mailboxIds || {}).find(([, v]) => v)?.[0];
+                  return m.id !== currentMboxId;
+                }) as mb}
+                <button class="move-item" role="menuitem" onclick={() => handleMoveTo(mb.id)}>
+                  {mb.role === 'inbox' ? '📥' : mb.role === 'archive' ? '📦' : mb.role === 'trash' ? '🗑️' : mb.role === 'junk' ? '⚠️' : '📁'}
+                  {mb.name}
+                </button>
+              {/each}
+            </div>
+          {/if}
+        </div>
         <button class="btn btn-danger" onclick={handleDelete}>🗑 Delete</button>
       </div>
     </div>
@@ -200,6 +234,21 @@
 
   .mail-actions { display: flex; gap: 8px; align-items: center; }
   .action-separator { width: 1px; height: 20px; background: var(--border); }
+
+  .move-wrapper { position: relative; }
+  .move-menu {
+    position: absolute; top: 100%; left: 0; z-index: 50;
+    background: var(--bg-secondary); border: 1px solid var(--border);
+    border-radius: 6px; padding: 4px 0; min-width: 180px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    max-height: 300px; overflow-y: auto;
+  }
+  .move-item {
+    display: block; width: 100%; padding: 6px 12px; text-align: left;
+    background: transparent; border: none; color: var(--fg-secondary);
+    font-size: 13px; font-family: inherit; cursor: pointer;
+  }
+  .move-item:hover { background: var(--bg-hover); color: var(--fg-primary); }
 
   .btn {
     padding: 6px 14px; font-size: 13px; font-family: inherit;

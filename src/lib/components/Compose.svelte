@@ -35,7 +35,10 @@
   // eslint-disable-next-line svelte/state_referenced_locally
   if (!initialized) {
     if (replyTo) {
-      to = replyTo.from?.[0]?.email || replyTo.from?.[0]?.name || '';
+      const from = replyTo.from?.[0];
+      if (from) {
+        to = from.name ? `${from.name} <${from.email}>` : from.email;
+      }
       subject = replyTo.subject?.startsWith('Re:') ? replyTo.subject : `Re: ${replyTo.subject || ''}`;
       body = `\n\n--- Original Message ---\nFrom: ${replyTo.from?.[0]?.name || ''} <${replyTo.from?.[0]?.email || ''}>\nDate: ${replyTo.receivedAt || ''}\nSubject: ${replyTo.subject || ''}\n\n${replyTo.preview || ''}`;
     } else if (forwardOf) {

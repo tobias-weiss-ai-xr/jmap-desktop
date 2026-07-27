@@ -319,19 +319,22 @@ pub async fn send_email(
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
 
+    // Parse from address — split "Name <email>" or use raw email
+    let (from_name, from_email) = parse_address(&from);
+
     let mut email_create = serde_json::json!({
-        "from": [{ "name": from.clone(), "email": from }],
-        "to": to.iter().map(|a| serde_json::json!({ "email": a })).collect::<Vec<_>>(),
+        "from": [{ "name": from_name, "email": from_email }],
+        "to": to.iter().map(|a| parse_address_to_json(a)).collect::<Vec<_>>(),
         "subject": subject,
     });
     if let Some(list) = cc {
         email_create["cc"] = serde_json::json!(
-            list.iter().map(|a| serde_json::json!({ "email": a })).collect::<Vec<_>>()
+            list.iter().map(|a| parse_address_to_json(a)).collect::<Vec<_>>()
         );
     }
     if let Some(list) = bcc {
         email_create["bcc"] = serde_json::json!(
-            list.iter().map(|a| serde_json::json!({ "email": a })).collect::<Vec<_>>()
+            list.iter().map(|a| parse_address_to_json(a)).collect::<Vec<_>>()
         );
     }
 
@@ -386,4 +389,25 @@ pub async fn get_mailbox_changes(
         .await
         .map_err(|e| e.to_string())?;
     serde_json::to_value(result).map_err(|e| e.to_string())
+}
+
+// ── Helpers ──
+
+/// Parse an email address string into (name, email).
+/// Handles "Name <email>" and bare "email" formats.
+fn parse_address(addr: &str) -> (String, String) {
+    let addr = addr.trim();
+    if let Some((name, email)) = addr.split_once('<') {
+        let name = name.trim().trim_matches('\"').to_string();
+        let email = email.trim().trim_end_matches('>').trim_matches('\"').to_string();
+        (name, email)
+    } else {
+        (String::new(), addr.to_string())
+    }
+}
+
+/// Parse an address into the JMAP EmailAddress JSON format.
+fn parse_address_to_json(addr: &str) -> serde_json::Value {
+    let (name, email) = parse_address(addr);
+    serde_json::json!({ "name": name, "email": email })
 }

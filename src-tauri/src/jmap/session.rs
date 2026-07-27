@@ -86,6 +86,7 @@ pub struct JmapSessionManager {
     mailbox_state: Mutex<Option<String>>,
     email_state: Mutex<Option<String>>,
     sync_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
+    es_handle: Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl Default for JmapSessionManager {
@@ -97,6 +98,7 @@ impl Default for JmapSessionManager {
             mailbox_state: Mutex::new(None),
             email_state: Mutex::new(None),
             sync_handle: Mutex::new(None),
+            es_handle: Mutex::new(None),
         }
     }
 }
@@ -241,7 +243,7 @@ impl JmapSessionManager {
         let arc_poll = Arc::clone(self);
         let arc_es = Arc::clone(self);
         let app_poll = app.clone();
-        let app_es = app;
+        let app_es = app.clone();
 
         let handle = tokio::spawn(async move {
             let _ = app_poll.emit("jmap://sync-status", "starting");
@@ -255,16 +257,20 @@ impl JmapSessionManager {
             }
         });
 
-        tokio::spawn(async move {
+        let es_handle = tokio::spawn(async move {
             tokio::time::sleep(Duration::from_secs(5)).await;
-            eventsource_loop(&arc_es, &app_es).await;
+            eventsource_loop_with_reconnect(&arc_es, &app_es).await;
         });
 
         *self.sync_handle.lock().unwrap() = Some(handle);
+        *self.es_handle.lock().unwrap() = Some(es_handle);
     }
 
     pub fn stop_sync(&self) {
         if let Some(handle) = self.sync_handle.lock().unwrap().take() {
+            handle.abort();
+        }
+        if let Some(handle) = self.es_handle.lock().unwrap().take() {
             handle.abort();
         }
     }
@@ -340,67 +346,85 @@ async fn poll_changes(session: &JmapSessionManager, app: &tauri::AppHandle) {
     let _ = app.emit("jmap://sync-status", "synced");
 }
 
-/// EventSource push listener — properly parses SSE fields.
-async fn eventsource_loop(session: &JmapSessionManager, app: &tauri::AppHandle) {
-    let es_url = match session.event_source_url() {
-        Some(u) => u,
-        None => return,
-    };
-    let client = match session.get_client() {
-        Ok(c) => c,
-        Err(_) => return,
-    };
-
-    // IMPORTANT: Do NOT set a timeout for streaming responses.
-    // Duration::from_secs(0) means "timeout immediately" in reqwest.
-    // We must omit .timeout() entirely for SSE.
-    let resp = match client
-        .get(&es_url)
-        .header(reqwest::header::ACCEPT, "text/event-stream")
-        .header(reqwest::header::CACHE_CONTROL, "no-cache")
-        .send()
-        .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("EventSource connect failed: {}", e);
-            return;
-        }
-    };
-    if !resp.status().is_success() {
-        return;
-    }
-
-    let _ = app.emit("jmap://sync-status", "push-connected");
-
-    use futures_util::StreamExt;
-    let mut stream = resp.bytes_stream();
-    let mut buffer = String::new();
+/// EventSource push listener — polls once per SSE event (blank line delimiter).
+/// Reconnects with exponential backoff when the stream drops.
+async fn eventsource_loop_with_reconnect(session: &JmapSessionManager, app: &tauri::AppHandle) {
+    let mut backoff = Duration::from_secs(1);
+    let max_backoff = Duration::from_secs(60);
 
     loop {
-        match stream.next().await {
-            Some(Ok(bytes)) => {
-                buffer.push_str(&String::from_utf8_lossy(&bytes));
+        // Check we still have a session (may have been disconnected)
+        let es_url = match session.event_source_url() {
+            Some(u) => u,
+            None => return,
+        };
+        let client = match session.get_client() {
+            Ok(c) => c,
+            Err(_) => return,
+        };
 
-                // Process complete lines
-                while let Some(pos) = buffer.find('\n') {
-                    let line = buffer[..pos].trim_end_matches('\r').to_string();
-                    buffer = buffer[pos + 1..].to_string();
-
-                    if line.is_empty() {
-                        // End of event — nothing to dispatch yet
-                    } else if let Some(data) = line.strip_prefix("data:") {
-                        // Data received — trigger a poll for changes
-                        if !data.trim().is_empty() {
-                            poll_changes(session, app).await;
-                        }
-                    }
-                    // Ignore id:, retry:, event:, comments
-                }
+        // IMPORTANT: Do NOT set a timeout for streaming responses.
+        // Duration::from_secs(0) means "timeout immediately" in reqwest.
+        // We must omit .timeout() entirely for SSE.
+        let resp = match client
+            .get(&es_url)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .header(reqwest::header::CACHE_CONTROL, "no-cache")
+            .send()
+            .await
+        {
+            Ok(r) if r.status().is_success() => r,
+            Ok(_) => {
+                eprintln!("EventSource: bad status, retrying in {:?}", backoff);
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+                continue;
             }
-            _ => {
-                let _ = app.emit("jmap://sync-status", "push-disconnected");
-                break;
+            Err(e) => {
+                eprintln!("EventSource connect failed: {}, retrying in {:?}", e, backoff);
+                tokio::time::sleep(backoff).await;
+                backoff = (backoff * 2).min(max_backoff);
+                continue;
+            }
+        };
+
+        let _ = app.emit("jmap://sync-status", "push-connected");
+        backoff = Duration::from_secs(1); // reset on successful connect
+
+        use futures_util::StreamExt;
+        let mut stream = resp.bytes_stream();
+        let mut buffer = String::new();
+        let mut has_pending_data = false;
+
+        loop {
+            match stream.next().await {
+                Some(Ok(bytes)) => {
+                    buffer.push_str(&String::from_utf8_lossy(&bytes));
+
+                    // Process complete lines
+                    while let Some(pos) = buffer.find('\n') {
+                        let line = buffer[..pos].trim_end_matches('\r').to_string();
+                        buffer = buffer[pos + 1..].to_string();
+
+                        if line.is_empty() {
+                            // End of event — poll for changes if we saw data
+                            if has_pending_data {
+                                poll_changes(session, app).await;
+                                has_pending_data = false;
+                            }
+                        } else if let Some(data) = line.strip_prefix("data:") {
+                            if !data.trim().is_empty() {
+                                has_pending_data = true;
+                            }
+                        }
+                        // Ignore id:, retry:, event:, comments
+                    }
+                }
+                _ => {
+                    // Stream ended — break inner loop to reconnect
+                    let _ = app.emit("jmap://sync-status", "push-disconnected");
+                    break;
+                }
             }
         }
     }

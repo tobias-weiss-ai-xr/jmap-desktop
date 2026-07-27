@@ -2,6 +2,15 @@
   import { emailIds, emails, selectedEmailId, isLoadingEmails } from '$lib/jmap/stores.js';
   import { toggleFlag } from '$lib/jmap/actions.js';
 
+  let listEl: HTMLDivElement | undefined = $state();
+
+  // Auto-focus the list for keyboard navigation when emails load
+  $effect(() => {
+    if ($emailIds.length > 0 && listEl) {
+      listEl.focus();
+    }
+  });
+
   function formatRelative(dateStr: string): string {
     if (!dateStr) return '';
     const date = new Date(dateStr);
@@ -79,7 +88,7 @@
   }
 
   function scrollToItem(id: string) {
- const el = document.querySelector(`[data-email-id="${id}"]`);
+    const el = document.querySelector(`[data-email-id="${id}"]`);
     el?.scrollIntoView({ block: 'nearest' });
   }
 </script>
@@ -90,7 +99,7 @@
   {:else if $emailIds.length === 0}
     <div class="empty">No emails</div>
   {:else}
-    <div class="mail-items" role="listbox" onkeydown={handleListKeydown} tabindex="-1">
+    <div class="mail-items" role="listbox" bind:this={listEl} onkeydown={handleListKeydown} tabindex="0">
       {#each $emailIds as id (id)}
         {@const email = $emails.get(id)}
         {#if email}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import { session, connected, mailboxes } from '$lib/jmap/stores.js';
   import { connect, disconnect } from '$lib/jmap/actions.js';
 
@@ -9,7 +10,7 @@
   let connecting = $state(false);
 
   // Auto-fill saved credentials on mount (not reactive — avoids overwriting user input)
-  $effect(() => {
+  onMount(() => {
     const saved = localStorage.getItem('jmap-settings');
     if (saved) {
       try {
