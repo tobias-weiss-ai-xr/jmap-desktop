@@ -64,6 +64,7 @@ export interface ConnectionSettings {
   serverUrl: string;
   username: string;
   password: string;
+  skipTlsVerify?: boolean;
 }
 
 // --- Mailbox (RFC 8621 §2) ---

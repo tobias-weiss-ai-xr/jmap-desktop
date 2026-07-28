@@ -1,6 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use tracing::{instrument};
+
 use crate::error::AppResult;
 use crate::jmap::session::JmapSessionManager;
 
@@ -371,6 +373,7 @@ pub async fn destroy_emails(
 ///
 /// Per RFC 8620 §4.1: a create id MUST be resolved in a previous method call.
 /// So Email/set (creating #c1) must come FIRST, EmailSubmission/set (referencing #c1) AFTER.
+#[instrument(level = "info", skip(session), fields(account_id))]
 pub async fn submit_email(
     session: &JmapSessionManager,
     account_id: &str,

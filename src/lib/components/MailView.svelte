@@ -10,12 +10,11 @@
   let showMoveMenu = $state(false);
   let showDeleteConfirm = $state(false);
 
-  // Close move menu when clicking outside
+  // Close move menu on outside click
   $effect(() => {
     if (showMoveMenu) {
       function onClick(e: MouseEvent) {
-        const target = e.target as HTMLElement;
-        if (!target.closest('.move-wrapper')) {
+        if (!(e.target as HTMLElement).closest('.move-wrapper')) {
           showMoveMenu = false;
         }
       }
@@ -23,7 +22,7 @@
       return () => window.removeEventListener('click', onClick);
     }
   });
-  function closeMoveMenu() { showMoveMenu = false; }
+
   function handleMoveTo(mailboxId: string) {
     if (!$selectedEmailId) return;
     moveToMailbox($selectedEmailId, mailboxId);
@@ -48,35 +47,39 @@
     if (email.htmlBody?.length > 0) {
       const part = email.htmlBody[0];
       if (email.bodyValues?.[part.partId]) {
-        // Sanitize HTML to prevent XSS from incoming emails
         return DOMPurify.sanitize(email.bodyValues[part.partId].value);
       }
     }
     if (email.textBody?.length > 0) {
       const part = email.textBody[0];
       if (email.bodyValues?.[part.partId]) {
-        return `<pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:13px;color:var(--fg-secondary)">${escapeHtml(email.bodyValues[part.partId].value)}</pre>`;
+        return `<pre style="white-space:pre-wrap;font-family:var(--font-mono);font-size:13px;color:var(--fg-secondary);line-height:1.6">${escapeHtml(email.bodyValues[part.partId].value)}</pre>`;
       }
     }
     return `<p class="muted">No content available</p>`;
   }
 
   function escapeHtml(str: string): string {
-    return str
-      .replace(/&/g, '&amp;')
-      .replace(/</g, '&lt;')
-      .replace(/>/g, '&gt;');
+    return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
   }
 
-  function handleReply() {
+  function openReply() {
+    if (!$currentEmail) return;
     composeMode = 'reply';
     composeTarget = $currentEmail;
     showCompose = true;
   }
 
-  function handleForward() {
+  function openForward() {
+    if (!$currentEmail) return;
     composeMode = 'forward';
     composeTarget = $currentEmail;
+    showCompose = true;
+  }
+
+  function openCompose() {
+    composeMode = 'new';
+    composeTarget = null;
     showCompose = true;
   }
 
@@ -85,7 +88,7 @@
     composeTarget = null;
   }
 
-  async function handleDelete() {
+  function handleDelete() {
     if (!$selectedEmailId) return;
     showDeleteConfirm = true;
   }
@@ -111,22 +114,53 @@
     }
   }
 
-  // Listen for compose events from sidebar & delete events from keyboard
+  // Global keyboard shortcuts
   $effect(() => {
+    function onKey(e: KeyboardEvent) {
+      // Ignore if typing in an input
+      if ((e.target as HTMLElement).tagName === 'INPUT' || (e.target as HTMLElement).tagName === 'TEXTAREA') return;
+
+      if (e.key === 'r' && !e.ctrlKey && !e.metaKey && $currentEmail && !showCompose && !showDeleteConfirm) {
+        e.preventDefault();
+        openReply();
+      } else if (e.key === 'c' && !e.ctrlKey && !e.metaKey && !showCompose && !showDeleteConfirm) {
+        e.preventDefault();
+        openCompose();
+      } else if (e.key === 'Escape') {
+        if (showDeleteConfirm) {
+          cancelDelete();
+        } else if (showCompose) {
+          handleComposeDone();
+        } else if (showMoveMenu) {
+          showMoveMenu = false;
+        }
+      }
+    }
+
     function onCompose() {
       composeMode = 'new';
       composeTarget = null;
       showCompose = true;
     }
+
+    function onReply() {
+      if ($currentEmail && !showCompose) openReply();
+    }
+
     function onDeleteCurrent() {
-      if ($selectedEmailId && !showCompose && $currentEmail) {
+      if ($selectedEmailId && !showCompose && $currentEmail && !showDeleteConfirm) {
         showDeleteConfirm = true;
       }
     }
+
+    window.addEventListener('keydown', onKey);
     window.addEventListener('jmap-compose', onCompose);
+    window.addEventListener('jmap-reply', onReply);
     window.addEventListener('jmap-delete-current', onDeleteCurrent);
     return () => {
+      window.removeEventListener('keydown', onKey);
       window.removeEventListener('jmap-compose', onCompose);
+      window.removeEventListener('jmap-reply', onReply);
       window.removeEventListener('jmap-delete-current', onDeleteCurrent);
     };
   });
@@ -134,12 +168,14 @@
 
 <div class="mail-view">
   {#if showCompose}
-    <Compose
-      replyTo={composeMode === 'reply' ? composeTarget : null}
-      forwardOf={composeMode === 'forward' ? composeTarget : null}
-      onSend={handleComposeDone}
-      onClose={handleComposeDone}
-    />
+    <div class="compose-overlay">
+      <Compose
+        replyTo={composeMode === 'reply' ? composeTarget : null}
+        forwardOf={composeMode === 'forward' ? composeTarget : null}
+        onSend={handleComposeDone}
+        onClose={handleComposeDone}
+      />
+    </div>
   {:else if $currentEmail}
     <div class="mail-header">
       <h1 class="mail-subject">{$currentEmail.subject || '(no subject)'}</h1>
@@ -165,18 +201,13 @@
         </div>
       </div>
 
-      {#if $currentEmail.hasAttachment}
-        <div class="mail-attachments">📎 Attachment</div>
-      {/if}
-
       <div class="mail-actions">
-        <button class="btn btn-primary" onclick={handleReply}>↩ Reply</button>
-        <button class="btn" onclick={handleForward}>↗ Forward</button>
+        <button class="btn btn-primary" onclick={openReply}>↩ Reply</button>
+        <button class="btn" onclick={openForward}>↗ Forward</button>
         <button class="btn" onclick={handleToggleRead}>
           {($currentEmail.keywords && $currentEmail.keywords.$seen) ? 'Mark unread' : 'Mark read'}
         </button>
         <div class="action-separator"></div>
-        <!-- Move dropdown -->
         <div class="move-wrapper">
           <button class="btn" onclick={() => showMoveMenu = !showMoveMenu}>📁 Move</button>
           {#if showMoveMenu}
@@ -199,8 +230,8 @@
 
     <!-- Delete confirmation dialog -->
     {#if showDeleteConfirm}
-      <!-- svelte-ignore a11y_no_static_element_interactions -->
       <div class="confirm-overlay" role="presentation" onclick={cancelDelete}>
+        <!-- svelte-ignore a11y_click_events_have_key_events -->
         <div
           class="confirm-dialog"
           onclick={(e) => e.stopPropagation()}
@@ -224,6 +255,9 @@
     <div class="mail-empty">
       <div class="empty-icon">📧</div>
       <p class="muted">Select an email to read</p>
+      <p class="muted shortcuts-peek">
+        <kbd>j</kbd><kbd>k</kbd> navigate · <kbd>r</kbd> reply · <kbd>c</kbd> compose
+      </p>
     </div>
   {/if}
 </div>
@@ -235,16 +269,26 @@
     flex-direction: column;
     overflow: hidden;
     background: var(--bg-primary);
+    position: relative;
   }
 
-  .mail-header { padding: 20px 24px; border-bottom: 1px solid var(--border); }
-  .mail-subject { font-size: 20px; font-weight: 600; margin-bottom: 12px; color: var(--fg-primary); }
+  /* Compose as overlay panel (slides up) */
+  .compose-overlay {
+    position: absolute;
+    inset: 0;
+    z-index: 50;
+    display: flex;
+    flex-direction: column;
+  }
 
-  .mail-meta { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--fg-secondary); margin-bottom: 12px; }
+  .mail-header { padding: 16px 20px 12px; border-bottom: 1px solid var(--border); }
+  .mail-subject { font-size: 18px; font-weight: 600; margin-bottom: 10px; color: var(--fg-primary); line-height: 1.3; }
+
+  .mail-meta { display: flex; flex-direction: column; gap: 3px; font-size: 13px; color: var(--fg-secondary); margin-bottom: 10px; }
   .meta-label { color: var(--fg-muted); margin-right: 4px; font-size: 12px; }
-  .mail-attachments { font-size: 12px; color: var(--fg-muted); margin-bottom: 8px; }
+  /* .mail-attachments used dynamically */
 
-  .mail-actions { display: flex; gap: 8px; align-items: center; }
+  .mail-actions { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
   .action-separator { width: 1px; height: 20px; background: var(--border); }
 
   .move-wrapper { position: relative; }
@@ -252,7 +296,7 @@
     position: absolute; top: 100%; left: 0; z-index: 50;
     background: var(--bg-secondary); border: 1px solid var(--border);
     border-radius: 6px; padding: 4px 0; min-width: 180px;
-    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.4);
     max-height: 300px; overflow-y: auto;
   }
   .move-item {
@@ -263,30 +307,50 @@
   .move-item:hover { background: var(--bg-hover); color: var(--fg-primary); }
 
   .btn {
-    padding: 6px 14px; font-size: 13px; font-family: inherit;
+    padding: 5px 12px; font-size: 13px; font-family: inherit;
     background: var(--bg-tertiary); color: var(--fg-secondary);
     border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+    transition: background 0.1s;
   }
   .btn:hover { background: var(--bg-hover); color: var(--fg-primary); }
 
   .btn-primary { background: var(--accent); color: var(--bg-primary); border-color: var(--accent); font-weight: 500; }
   .btn-primary:hover { background: var(--accent-hover); }
 
-  .btn-danger { color: var(--danger); border-color: var(--danger); opacity: 0.7; }
-  .btn-danger:hover { background: var(--danger); color: var(--bg-primary); opacity: 1; }
+  .btn-danger { color: var(--danger); border-color: color-mix(in srgb, var(--danger) 40%, transparent); }
+  .btn-danger:hover { background: var(--danger); color: var(--bg-primary); }
 
-  .mail-body { flex: 1; overflow-y: auto; padding: 24px; }
+  .mail-body { flex: 1; overflow-y: auto; padding: 20px; line-height: 1.6; }
 
   .mail-empty {
     flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px;
   }
 
-  .empty-icon { font-size: 48px; opacity: 0.3; }
+  .empty-icon { font-size: 48px; opacity: 0.2; }
+
+  .shortcuts-peek {
+    margin-top: 8px;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .shortcuts-peek kbd {
+    display: inline-block;
+    padding: 1px 5px;
+    font-size: 10px;
+    font-family: var(--font-mono);
+    background: var(--bg-tertiary);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--fg-secondary);
+  }
 
   /* Confirm dialog */
   .confirm-overlay {
     position: fixed;
-    top: 0; left: 0; right: 0; bottom: 0;
+    inset: 0;
     background: rgba(0, 0, 0, 0.5);
     display: flex;
     align-items: center;

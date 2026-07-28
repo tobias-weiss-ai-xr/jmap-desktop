@@ -1,6 +1,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
+use tracing::{debug, info, warn};
+
 use crate::jmap::client;
 use crate::jmap::{ConnectionSettings, JmapSessionManager};
 use tauri::{Emitter, State};
@@ -19,10 +21,24 @@ pub fn get_preconfigured_settings() -> Option<ConnectionSettings> {
         return None;
     }
 
+    let skip_tls_verify =
+        std::env::var("JMAP_SKIP_TLS_VERIFY")
+            .map(|v| v == "true" || v == "1")
+            .unwrap_or(false);
+
+    info!(
+        %server_url,
+        %username,
+        has_password = !password.is_empty(),
+        skip_tls_verify,
+        "preconfigured settings loaded from env vars"
+    );
+
     Some(ConnectionSettings {
         server_url: server_url.trim_end_matches('/').to_string(),
         username,
         password,
+        skip_tls_verify,
     })
 }
 
@@ -34,8 +50,14 @@ pub async fn connect_jmap(
     app: tauri::AppHandle,
     settings: ConnectionSettings,
 ) -> Result<serde_json::Value, String> {
-    let jmap_session = session.connect(settings).await.map_err(|e| e.to_string())?;
-    session.start_sync(app);
+    debug!(server_url = %settings.server_url, username = %settings.username, "connect_jmap called");
+    let jmap_session = session.connect(settings).await.map_err(|e| {
+        warn!(%e, "connect_jmap failed");
+        e.to_string()
+    })?;
+    session.start_sync(app.clone());
+    let _ = app.emit("jmap://connected", true);
+    info!("JMAP connected and sync started");
     serde_json::to_value(jmap_session).map_err(|e| e.to_string())
 }
 
@@ -44,6 +66,7 @@ pub fn disconnect_jmap(
     session: State<'_, Arc<JmapSessionManager>>,
     app: tauri::AppHandle,
 ) {
+    info!("disconnect_jmap called");
     session.disconnect();
     let _ = app.emit("jmap://connected", false);
 }
@@ -66,7 +89,11 @@ pub async fn get_mailboxes(
 ) -> Result<Vec<serde_json::Value>, String> {
     let list = client::get_mailboxes(&session)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            warn!(%e, "get_mailboxes failed");
+            e.to_string()
+        })?;
+    debug!(count = list.len(), "get_mailboxes succeeded");
     Ok(list
         .into_iter()
         .map(|m| serde_json::to_value(m).unwrap())
@@ -80,6 +107,7 @@ pub async fn create_mailbox(
     parent_id: Option<String>,
     role: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    debug!(%name, ?parent_id, ?role, "create_mailbox");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
@@ -100,7 +128,10 @@ pub async fn create_mailbox(
             )],
         )
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            warn!(%e, "create_mailbox failed");
+            e.to_string()
+        })?;
     for (name, args, _) in &responses {
         if name == "Mailbox/set" {
             return Ok(args.clone());
@@ -131,7 +162,11 @@ pub async fn query_emails(
         position.unwrap_or(0),
     )
     .await
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        warn!(%e, "query_emails failed");
+        e.to_string()
+    })?;
+    debug!(ids = result.ids.len(), total = ?result.total, "query_emails succeeded");
     serde_json::to_value(result).map_err(|e| e.to_string())
 }
 
@@ -149,7 +184,11 @@ pub async fn get_emails(
         .map_err(|e| e.to_string())?;
     let emails = client::get_emails(&session, &account_id, &ids)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| {
+            warn!(%e, "get_emails failed");
+            e.to_string()
+        })?;
+    debug!(returned = emails.len(), requested = ids.len(), "get_emails succeeded");
     Ok(serde_json::json!({
         "accountId": account_id,
         "state": session.email_state(),
@@ -164,12 +203,14 @@ pub async fn search_emails(
     text: String,
     limit: Option<u64>,
 ) -> Result<serde_json::Value, String> {
+    debug!(query = %text, "search_emails");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
     let result = client::search_emails(&session, &account_id, &text, limit.unwrap_or(50))
         .await
         .map_err(|e| e.to_string())?;
+    debug!(results = result.ids.len(), "search_emails succeeded");
     serde_json::to_value(result).map_err(|e| e.to_string())
 }
 
@@ -178,6 +219,7 @@ pub async fn get_threads(
     session: State<'_, Arc<JmapSessionManager>>,
     ids: Vec<String>,
 ) -> Result<serde_json::Value, String> {
+    debug!(count = ids.len(), "get_threads");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
@@ -208,6 +250,7 @@ pub async fn set_email_keywords(
     id: String,
     keywords: HashMap<String, bool>,
 ) -> Result<serde_json::Value, String> {
+    debug!(email_id = %id, keywords = ?keywords, "set_email_keywords");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
@@ -230,10 +273,10 @@ pub async fn mark_seen(
     id: String,
     seen: bool,
 ) -> Result<serde_json::Value, String> {
+    debug!(email_id = %id, seen, "mark_seen");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
-    // JMAP patch syntax: set keyword to true/false
     let result = client::update_email(
         &session,
         &account_id,
@@ -253,6 +296,7 @@ pub async fn toggle_flagged(
     id: String,
     value: bool,
 ) -> Result<serde_json::Value, String> {
+    debug!(email_id = %id, value, "toggle_flagged");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
@@ -275,10 +319,10 @@ pub async fn move_email(
     id: String,
     to_mailbox_id: String,
 ) -> Result<serde_json::Value, String> {
+    debug!(email_id = %id, to_mailbox_id = %to_mailbox_id, "move_email");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
-    // JMAP: set target mailbox to true, all others to false
     let result = client::move_email_to(
         &session,
         &account_id,
@@ -296,6 +340,7 @@ pub async fn delete_email(
     session: State<'_, Arc<JmapSessionManager>>,
     id: String,
 ) -> Result<serde_json::Value, String> {
+    debug!(email_id = %id, "delete_email");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
@@ -310,13 +355,13 @@ pub async fn delete_email(
         .map(|m| m.id.clone());
 
     if let Some(trash_id) = trash {
-        // Move to trash
+        debug!(trash_id = %trash_id, "moving to trash");
         let result = client::move_email_to(&session, &account_id, &id, &trash_id)
             .await
             .map_err(|e| e.to_string())?;
         serde_json::to_value(result).map_err(|e| e.to_string())
     } else {
-        // No trash — hard destroy
+        warn!("no trash mailbox — hard destroying email");
         let result = client::destroy_emails(&session, &account_id, &[id], None)
             .await
             .map_err(|e| e.to_string())?;
@@ -336,6 +381,13 @@ pub async fn send_email(
     bcc: Option<Vec<String>>,
     _reply_to_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
+    info!(
+        from = %from,
+        to_count = to.len(),
+        cc_count = cc.as_ref().map(|c| c.len()).unwrap_or(0),
+        subject_len = subject.len(),
+        "send_email"
+    );
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
@@ -373,7 +425,10 @@ pub async fn send_email(
 
     client::submit_email(&session, &account_id, None, Some(email_create))
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| {
+            warn!(%e, "send_email failed");
+            e.to_string()
+        })
 }
 
 // ── Changes ──
@@ -384,6 +439,7 @@ pub async fn get_email_changes(
     since_state: String,
     max_changes: Option<u64>,
 ) -> Result<serde_json::Value, String> {
+    debug!(since = %since_state, ?max_changes, "get_email_changes");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;
@@ -403,6 +459,7 @@ pub async fn get_mailbox_changes(
     session: State<'_, Arc<JmapSessionManager>>,
     since_state: String,
 ) -> Result<serde_json::Value, String> {
+    debug!(since = %since_state, "get_mailbox_changes");
     let account_id = session
         .primary_mail_account_id()
         .map_err(|e| e.to_string())?;

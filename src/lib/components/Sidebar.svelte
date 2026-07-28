@@ -1,8 +1,13 @@
 <script lang="ts">
   import { session, selectedMailboxId, mailboxes, topLevelMailboxes, syncStatus } from '$lib/jmap/stores.js';
+  import { disconnect } from '$lib/jmap/actions.js';
 
   function unreadCount(id: string): number {
     return $mailboxes.find((m) => m.id === id)?.unreadEmails ?? 0;
+  }
+
+  function totalUnread(): number {
+    return $mailboxes.reduce((sum, m) => sum + m.unreadEmails, 0);
   }
 
   const roleOrder: Record<string, number> = {
@@ -11,9 +16,11 @@
 
   // Search
   let searchQuery = $state('');
+  let searchActive = $state(false);
 
   function handleSearch() {
     if (searchQuery.trim()) {
+      searchActive = true;
       const event = new CustomEvent('jmap-search', { detail: searchQuery });
       window.dispatchEvent(event);
     }
@@ -26,6 +33,7 @@
     }
     if (e.key === 'Escape') {
       searchQuery = '';
+      searchActive = false;
       (e.target as HTMLInputElement).blur();
     }
   }
@@ -42,25 +50,43 @@
       default: return '📁';
     }
   }
+
+  function handleDisconnect() {
+    disconnect();
+    // Clear saved credentials so we don't auto-reconnect
+    localStorage.removeItem('jmap-settings');
+  }
 </script>
 
 <aside class="sidebar" role="navigation" aria-label="Mail folders">
   <div class="sidebar-header">
-    <h2 class="sidebar-title">
-      {#if $session}
-        {$session.accounts[$session.primaryAccounts?.['urn:ietf:params:jmap:mail']]?.name ?? 'JMAP Mail'}
-      {:else}
-        JMAP Desktop
-      {/if}
+    <h2 class="sidebar-title" title={$session?.username ?? ''}>
+      {$session?.username ?? 'JMAP Desktop'}
     </h2>
-    <div class="sync-badge" class:syncing={$syncStatus === 'syncing'} title="Sync status: {$syncStatus}" aria-label="Sync: {$syncStatus}">
-      {#if $syncStatus === 'syncing'}
-        ⟳
-      {:else if $syncStatus === 'synced' || $syncStatus === 'push-connected'}
-        ✓
-      {:else}
-        ○
-      {/if}
+    <div class="header-actions">
+      <button
+        class="sync-badge"
+        class:syncing={$syncStatus === 'syncing'}
+        title="Sync status: {$syncStatus}"
+        aria-label="Sync: {$syncStatus}"
+        disabled
+      >
+        {#if $syncStatus === 'syncing'}
+          ⟳
+        {:else if $syncStatus === 'synced' || $syncStatus === 'push-connected'}
+          ✓
+        {:else}
+          ○
+        {/if}
+      </button>
+      <button
+        class="disconnect-btn"
+        onclick={handleDisconnect}
+        title="Disconnect"
+        aria-label="Disconnect from server"
+      >
+        ⏻
+      </button>
     </div>
   </div>
 
@@ -70,6 +96,7 @@
       bind:value={searchQuery}
       placeholder="Search emails…"
       onkeydown={handleSearchKeydown}
+      onfocus={() => searchActive = true}
       aria-label="Search emails"
     />
   </div>
@@ -110,7 +137,12 @@
   </nav>
 
   <div class="sidebar-footer">
-    <a href="/settings" class="settings-link">⚙ Settings</a>
+    {#if totalUnread() > 0}
+      <span class="unread-summary">{totalUnread()} unread</span>
+    {:else}
+      <span class="unread-summary">All read</span>
+    {/if}
+    <a href="/settings" class="settings-link" title="Settings">⚙</a>
   </div>
 </aside>
 
@@ -125,7 +157,7 @@
   }
 
   .sidebar-header {
-    padding: 12px 16px;
+    padding: 12px 14px;
     border-bottom: 1px solid var(--border);
     display: flex;
     align-items: center;
@@ -133,19 +165,31 @@
   }
 
   .sidebar-title {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 600;
     color: var(--fg-primary);
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
     flex: 1;
+    min-width: 0;
+  }
+
+  .header-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    flex-shrink: 0;
   }
 
   .sync-badge {
     font-size: 14px;
     color: var(--fg-muted);
-    flex-shrink: 0;
+    background: transparent;
+    border: none;
+    cursor: default;
+    padding: 2px;
+    line-height: 1;
   }
 
   .sync-badge.syncing {
@@ -158,6 +202,25 @@
     to { transform: rotate(360deg); }
   }
 
+  .disconnect-btn {
+    font-size: 15px;
+    background: transparent;
+    border: none;
+    color: var(--fg-muted);
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 3px;
+    line-height: 1;
+    opacity: 0.6;
+    transition: opacity 0.15s, color 0.15s;
+  }
+
+  .disconnect-btn:hover {
+    opacity: 1;
+    color: var(--danger);
+    background: color-mix(in srgb, var(--danger) 10%, transparent);
+  }
+
   .search-bar {
     padding: 8px 12px;
     border-bottom: 1px solid var(--border);
@@ -165,7 +228,7 @@
 
   .search-bar input {
     width: 100%;
-    padding: 6px 10px;
+    padding: 7px 10px;
     font-size: 13px;
     font-family: inherit;
     background: var(--bg-tertiary);
@@ -173,6 +236,7 @@
     border: 1px solid var(--border);
     border-radius: 4px;
     outline: none;
+    transition: border-color 0.15s;
   }
 
   .search-bar input:focus {
@@ -186,13 +250,14 @@
     padding: 8px;
     font-size: 13px;
     font-family: inherit;
-    font-weight: 500;
+    font-weight: 600;
     background: var(--accent);
     color: var(--bg-primary);
     border: none;
-    border-radius: 4px;
+    border-radius: 6px;
     cursor: pointer;
     text-align: center;
+    transition: background 0.15s;
   }
 
   .compose-btn:hover {
@@ -208,7 +273,7 @@
     display: flex;
     align-items: center;
     width: 100%;
-    padding: 6px 12px;
+    padding: 7px 12px;
     gap: 8px;
     background: transparent;
     border: none;
@@ -217,21 +282,25 @@
     text-align: left;
     font-size: 13px;
     font-family: inherit;
+    border-radius: 0;
+    transition: background 0.1s;
   }
 
   .mailbox-item:hover { background: var(--bg-hover); }
-  .mailbox-item.selected { background: var(--bg-selected); color: var(--fg-primary); }
+  .mailbox-item.selected { background: var(--bg-selected); color: var(--fg-primary); font-weight: 500; }
 
-  .mailbox-icon { font-size: 16px; flex-shrink: 0; }
+  .mailbox-icon { font-size: 16px; flex-shrink: 0; width: 20px; text-align: center; }
   .mailbox-name { flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
   .unread-badge {
     font-size: 11px;
     font-weight: 600;
     color: var(--mail-unread);
-    background: var(--bg-tertiary);
+    background: color-mix(in srgb, var(--mail-unread) 15%, transparent);
     padding: 1px 6px;
     border-radius: 10px;
+    min-width: 22px;
+    text-align: center;
   }
 
   .sidebar-empty {
@@ -248,9 +317,26 @@
   }
 
   .sidebar-footer {
-    padding: 8px 16px;
+    padding: 8px 12px;
     border-top: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
 
-  .settings-link { font-size: 12px; color: var(--fg-muted); }
+  .unread-summary {
+    font-size: 11px;
+    color: var(--fg-muted);
+  }
+
+  .settings-link {
+    font-size: 15px;
+    color: var(--fg-muted);
+    transition: color 0.15s;
+  }
+
+  .settings-link:hover {
+    color: var(--fg-primary);
+    text-decoration: none;
+  }
 </style>

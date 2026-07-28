@@ -24,3 +24,8 @@ url = "2"
 futures-util = "0.3"
 base64 = "0.22"
 zeroize = { version = "1", features = ["derive"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json", "fmt", "registry", "std"] }
+tracing-appender = "0.2"
+time = { version = "0.3", features = ["formatting", "macros"] }
+dirs = "5"
